@@ -10,16 +10,44 @@ from .const import *
 
 class DataSourceCallbacks:
     async def read_range(self, offset, length) -> bytes | bytearray | memoryview:
-        ...
+        """
+        读取指定的一段数据
+
+        :param offset: 数据位置偏移量
+        :param length: 在此位置之后读取的数据大小
+        :return: bytes | bytearray | memoryview
+        """
 
     def read_range_stream(self, offset, length) -> AsyncGenerator[bytes | bytearray | memoryview]:
-        ...
+        """
+        流式读取时指定的一段数据
+
+        返回一个异步生成器（或迭代器）
+
+        :param offset: 数据起始偏移量
+        :param length: 在此位置之后读取的数据大小
+        :return: bytes | bytearray | memoryview
+        """
 
     async def get_total_size(self) -> int:
-        ...
+        """
+        获取数据的总大小，如果无法获取或数据大小有误，应抛出异常中断操作
+        :return: int，表示数据的总大小
+        """
 
 
 class RemoteZip:
+    """
+    远程 Zip 文件访问器
+
+    （RemoteZip 不会缓存已读取的文件，你需要自己保证数据复用）
+
+    :ivar source: 数据源回调对象
+    :ivar cd_info: 中央仓库元数据（EOCD），可能为 EOCD、Zip64EOCD 或 None 值
+    :ivar files: 中央目录文件列表
+    :ivar file_mapping: 构建的文件映射表，可能为 None
+    :ivar is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
+    """
     async def _read_range(self, offset, length):
         return await self.source.read_range(offset, length)
 
@@ -38,7 +66,15 @@ class RemoteZip:
 
         self.is_zip64 = False
 
-    async def fetch_eocd(self, initial_chunk=4096, max_cnt=-1, loss_factor: int | float = 2):
+    async def fetch_zip_info(self, initial_chunk=4096, max_cnt=-1, loss_factor: int | float = 2):
+        """
+        获取 zip 文件的元信息（EOCD）
+
+        :param initial_chunk: 初始扫描的大小
+        :param max_cnt: 最大重试次数
+        :param loss_factor: 重试后更新扫描大小的系数
+        :return: 一个 EOCD 或者 Zip64EOCD 对象（如果这个 zip 文件启动了 zip64 扩展）
+        """
         chunk_size = initial_chunk
 
         last_start = await self._get_total_size()
@@ -110,9 +146,9 @@ class RemoteZip:
                     # print(zip64_eocd)
 
                     self.cd_info = zip64_eocd
-                    return cnt
+                    return self.cd_info
                 else:
-                    return cnt
+                    return self.cd_info
 
             if max_cnt != -1 and cnt >= max_cnt:
                 raise RuntimeError
@@ -122,7 +158,13 @@ class RemoteZip:
         else:
             raise RuntimeError
 
-    async def fetch_cd(self, ignore_extra: bool = False):
+    async def fetch_file_list(self, ignore_extra: bool = False) -> list[CDEntry]:
+        """
+        从远程 zip 的中央目录获取文件列表
+
+        :param ignore_extra: 是否忽略无法解析的片段并返回已有的内容
+        :return: 一个列表，包含所有获取到的文件
+        """
         assert self.cd_info
         eocd = self.cd_info
         buffer = bytearray()
@@ -155,7 +197,16 @@ class RemoteZip:
 
         self.files = files
 
-    async def fetch_single_file_header(self, filename=None, entry: CDEntry | None = None):
+        return files
+
+    async def fetch_file_header(self, filename=None, entry: CDEntry | None = None):
+        """
+        获取 filename 对应的本地文件头
+
+        :param filename: 文件名称，可选
+        :param entry: CDEntry 对象，可选
+        :return: 一个 LocalFileHeader 对象，以及在解析时获取到的多余数据（在文件本身很小的时候，这一段数据可以直接解析出文件内容）
+        """
         filename = str(filename)
         entry = entry or self.find_file_entry(filename)
         buffer = await self._read_range(entry.local_header_offset, entry.__cstruct__.size + 64)  # 预留64字节的变长字段
@@ -180,11 +231,31 @@ class RemoteZip:
         return header, buffer[pos:]  # 返回剩余的数据部分
 
     def build_mapping(self):
+        """
+        构建文件映射表，格式为 filename -> CDEntry
+
+        重复调用将会重建映射表
+
+        :return: 构建完成的映射表
+        """
         m = self.file_mapping = {}
         for entry in self.files:
             m[entry.filename] = entry
 
+        return m
+
     def find_file_entry(self, filename):
+        """
+        从本地已有的数据获取 filename 对应的 CDEntry 对象
+
+        如果已有构建好的文件映射，则直接查找文件映射内容
+        否则将遍历中央仓库找到文件
+
+        若是发现文件不存在，将会抛出 FileNotFoundError
+
+        :param filename:
+        :return:
+        """
         if self.file_mapping:
             return self.file_mapping[filename]
         else:
@@ -206,7 +277,7 @@ class RemoteZip:
         if entry.algorithm not in {0x0000, 0x0008}:
             raise UnsupportedAlgorithmError(entry.algorithm)
 
-        header, buffer = await self.fetch_single_file_header(entry=entry)
+        header, buffer = await self.fetch_file_header(entry=entry)
         # print(header)
         real_data_offset = entry.local_header_offset + header.data_offset
 
@@ -222,11 +293,25 @@ class RemoteZip:
                 return deflate_wrapper(raw_generator)
 
     async def stream_single_file(self, filename):
+        """
+        流式读取一个压缩包内的文件
+
+        :param filename: 压缩包内的文件名
+        :return:
+        """
         gen = await self._stream_single_file(filename)
         async for i in gen:
             yield i
 
     async def load_single_file(self, filename) -> bytearray:
+        """
+        直接加载文件的内容
+
+        建议在小文件上使用此方法
+
+        :param filename: 压缩包内的文件名
+        :return:
+        """
         buffer = bytearray()
         async for i in self.stream_single_file(filename):
             buffer.extend(i)
