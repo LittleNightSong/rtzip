@@ -1,0 +1,23 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "obstruct"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/a2/183ed0314d76e02fea0760236190af7d8bbe24f2b34b7803505491ab818f/obstruct-0.5.2.tar.gz", hash = "sha256:21edec2c6d41f8b62df6d98edb845566020ef636722dcfe4f060fe4e477e90ae", size = 44801, upload-time = "2026-08-18T09:15:15.779Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/71/562c75985510399f2e78b2b537adeb1f656007adb399e8fb2bb67a1cdbf8/obstruct-0.5.2-py3-none-any.whl", hash = "sha256:bacfff1c263dd33c6e011af53aa8e3b0399d9b9d9ad4c769f73fb8bfd44f3db1", size = 12795, upload-time = "2026-08-18T09:15:13.112Z" },
+]
+
+[[package]]
+name = "rtzip"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "obstruct" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "obstruct", specifier = "==0.5.2" }]
