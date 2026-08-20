@@ -5,6 +5,8 @@ from typing import Annotated, Self
 
 import obstruct as obs
 
+from rtzip.utils import exactly_get_slice
+
 EXTRA_FIELD_HEADER = struct.Struct("<HH")
 
 
@@ -245,13 +247,13 @@ class CDEntry(obs.Struct):
         filename_len, extra_len, comment_len = self.filename_len, self.extra_len, self.comment_len
 
         pos = offset + header_size
-        filename = bytes(buffer[pos: pos + filename_len])
+        filename = bytes(exactly_get_slice(buffer, pos, filename_len))
         pos += filename_len
 
-        extra_attrs = buffer[pos: pos + extra_len].tobytes()
+        extra_attrs = bytes(exactly_get_slice(buffer, pos, extra_len))
         pos += extra_len
 
-        comment = buffer[pos: pos + comment_len].tobytes()
+        comment = bytes(exactly_get_slice(buffer, pos, comment_len))
         pos += comment_len
 
         self.filename = filename

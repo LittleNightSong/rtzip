@@ -1,3 +1,3 @@
 from .models import EOCD, Zip64EOCD, CDEntry
 from .errors import *
-from .remotezip import RemoteZip
+from .remotezip import RemoteZip, DataSourceCallbacks

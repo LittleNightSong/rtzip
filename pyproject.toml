@@ -1,7 +1,12 @@
 [project]
 name = "rtzip"
-version = "0.2.0"
+version = "0.2.1"
 requires-python = ">=3.12"
 dependencies = [
     "obstruct==0.5.2",
+]
+
+[dependency-groups]
+dev = [
+    "niquests>=3.21.0",
 ]

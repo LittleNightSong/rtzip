@@ -13,3 +13,9 @@ async def deflate_wrapper(gen):
 
 async def single_chunk_wrapper(data: Buffer):
     yield data
+
+
+def exactly_get_slice(__obj, __offset, __length):
+    result = __obj[__offset:__offset + __length]
+    assert len(result) == __length
+    return result

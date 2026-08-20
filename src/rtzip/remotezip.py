@@ -1,11 +1,11 @@
 import struct
 from typing import AsyncGenerator
 
+from .const import *
 from .errors import UnsupportedAlgorithmError, UnsupportedCryptoError, UnsupportedDataDescriptorError
 from .models import EOCD, Zip64EOCD, CDEntry, LocalFileHeader
 from .utils import deflate_wrapper, single_chunk_wrapper
 
-from .const import *
 
 
 class DataSourceCallbacks:
@@ -18,7 +18,7 @@ class DataSourceCallbacks:
         :return: bytes | bytearray | memoryview
         """
 
-    def read_range_stream(self, offset, length) -> AsyncGenerator[bytes | bytearray | memoryview]:
+    def read_range_stream(self, offset, length) -> AsyncGenerator[bytes | bytearray | memoryview, None]:
         """
         流式读取时指定的一段数据
 
@@ -48,6 +48,7 @@ class RemoteZip:
     :ivar file_mapping: 构建的文件映射表，可能为 None
     :ivar is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
     """
+
     async def _read_range(self, offset, length):
         return await self.source.read_range(offset, length)
 
@@ -78,6 +79,7 @@ class RemoteZip:
         chunk_size = initial_chunk
 
         last_start = await self._get_total_size()
+        # print("File Size:", last_start)
         cnt = 0
 
         buffer = b''
@@ -174,6 +176,8 @@ class RemoteZip:
             nonlocal buffer
             entry, nbytes = CDEntry.from_buffer(buffer)
 
+            # print(f'{len(files) + 1:03} Get Entry', entry)
+
             if self.is_zip64:
                 entry.fix_by_zip64()
 
@@ -181,13 +185,14 @@ class RemoteZip:
             buffer = buffer[nbytes + 4:]
 
         async for chunk in self._read_range_stream(eocd.cd_offset, eocd.cd_size):
+            # print("Read Chunk", len(chunk))
             # print(chunk)
             buffer.extend(chunk)
 
-            while buffer and buffer[:4] == CDENTITY_SIGNATURE:
+            while buffer and buffer[:4] == CDENTRY_SIGNATURE:
                 try:
                     consume_entry()
-                except struct.error:
+                except (struct.error, AssertionError):
                     continue
 
         if buffer and not ignore_extra:
