@@ -63,7 +63,7 @@ class RemoteZip:
 
         self.cd_info: EOCD | Zip64EOCD | None = None
         self.files: list[CDEntry] = []
-        self.file_mapping: dict[str, CDEntry] | None = None
+        self.file_mapping: dict[bytes, CDEntry] | None = None
 
         self.is_zip64 = False
 
@@ -193,7 +193,7 @@ class RemoteZip:
                 try:
                     consume_entry()
                 except (struct.error, AssertionError):
-                    continue
+                    break
 
         if buffer and not ignore_extra:
             # print("Read Entries: ", len(files))
@@ -249,7 +249,7 @@ class RemoteZip:
 
         return m
 
-    def find_file_entry(self, filename):
+    def find_file_entry(self, filename: bytes):
         """
         从本地已有的数据获取 filename 对应的 CDEntry 对象
 
@@ -270,7 +270,7 @@ class RemoteZip:
             else:
                 raise FileNotFoundError(filename)
 
-    async def _stream_single_file(self, filename):
+    async def _stream_single_file(self, filename: bytes):
         entry = self.find_file_entry(filename)
 
         if entry.is_encrypted:
@@ -297,7 +297,7 @@ class RemoteZip:
             case 0x0008:
                 return deflate_wrapper(raw_generator)
 
-    async def stream_single_file(self, filename):
+    async def stream_single_file(self, filename: bytes):
         """
         流式读取一个压缩包内的文件
 
@@ -308,7 +308,7 @@ class RemoteZip:
         async for i in gen:
             yield i
 
-    async def load_single_file(self, filename) -> bytearray:
+    async def load_single_file(self, filename: bytes) -> bytearray:
         """
         直接加载文件的内容
 
