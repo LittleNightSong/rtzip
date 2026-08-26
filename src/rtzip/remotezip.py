@@ -36,12 +36,6 @@ class DataSource:
         """
 
 
-def exactly_get_slice(__obj, __offset, __length):
-    result = __obj[__offset:__offset + __length]
-    assert len(result) == __length
-    return result
-
-
 async def single_chunk_wrapper(__data: Buffer, /):
     yield __data
 

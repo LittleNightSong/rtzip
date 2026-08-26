@@ -5,9 +5,13 @@ from typing import Annotated, Self
 
 import obstruct as obs
 
-from rtzip.utils import exactly_get_slice
-
 EXTRA_FIELD_HEADER = struct.Struct("<HH")
+
+
+def exactly_get_slice(__obj, __offset, __length):
+    result = __obj[__offset:__offset + __length]
+    assert len(result) == __length
+    return result
 
 
 def parse_extra_fields(buffer):
