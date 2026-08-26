@@ -8,7 +8,7 @@ from .utils import deflate_wrapper, single_chunk_wrapper
 
 
 
-class DataSourceCallbacks:
+class DataSource:
     async def read_range(self, offset, length) -> bytes | bytearray | memoryview:
         """
         读取指定的一段数据
@@ -58,7 +58,7 @@ class RemoteZip:
     async def _get_total_size(self):
         return await self.source.get_total_size()
 
-    def __init__(self, source: DataSourceCallbacks):
+    def __init__(self, source: DataSource):
         self.source = source
 
         self.cd_info: EOCD | Zip64EOCD | None = None
@@ -74,7 +74,7 @@ class RemoteZip:
         :param initial_chunk: 初始扫描的大小
         :param max_cnt: 最大重试次数
         :param loss_factor: 重试后更新扫描大小的系数
-        :return: 一个 EOCD 或者 Zip64EOCD 对象（如果这个 zip 文件启动了 zip64 扩展）
+        :return: 一个 EOCD 或者 Zip64EOCD 对象（如果这个 zip 文件启用了 zip64 扩展）
         """
         chunk_size = initial_chunk
 
