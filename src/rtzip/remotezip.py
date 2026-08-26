@@ -1,11 +1,11 @@
 import struct
+from collections.abc import Buffer
 from typing import AsyncGenerator
 
+from .algorithm_register import is_algorithm_available, get_algorithm_handler
 from .const import *
 from .errors import UnsupportedAlgorithmError, UnsupportedCryptoError, UnsupportedDataDescriptorError
 from .models import EOCD, Zip64EOCD, CDEntry, LocalFileHeader
-from .utils import deflate_wrapper, single_chunk_wrapper
-
 
 
 class DataSource:
@@ -34,6 +34,16 @@ class DataSource:
         获取数据的总大小，如果无法获取或数据大小有误，应抛出异常中断操作
         :return: int，表示数据的总大小
         """
+
+
+def exactly_get_slice(__obj, __offset, __length):
+    result = __obj[__offset:__offset + __length]
+    assert len(result) == __length
+    return result
+
+
+async def single_chunk_wrapper(__data: Buffer, /):
+    yield __data
 
 
 class RemoteZip:
@@ -279,7 +289,7 @@ class RemoteZip:
         if entry.has_data_descriptor:
             raise UnsupportedDataDescriptorError()
 
-        if entry.algorithm not in {0x0000, 0x0008}:
+        if not is_algorithm_available(entry.algorithm):
             raise UnsupportedAlgorithmError(entry.algorithm)
 
         header, buffer = await self.fetch_file_header(entry=entry)
@@ -291,11 +301,7 @@ class RemoteZip:
         else:
             raw_generator = self._read_range_stream(real_data_offset, entry.compressed_size)
 
-        match entry.algorithm:
-            case 0x0000:
-                return raw_generator
-            case 0x0008:
-                return deflate_wrapper(raw_generator)
+        return get_algorithm_handler(entry.algorithm)(raw_generator)
 
     async def stream_single_file(self, filename: bytes):
         """
