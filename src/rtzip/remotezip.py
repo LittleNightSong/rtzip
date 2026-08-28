@@ -216,8 +216,7 @@ class RemoteZip:
         :param entry: CDEntry 对象，可选
         :return: 一个 LocalFileHeader 对象，以及在解析时获取到的多余数据（在文件本身很小的时候，这一段数据可以直接解析出文件内容）
         """
-        filename = str(filename)
-        entry = entry or self.find_file_entry(filename)
+        entry = entry or self.find_file_entry(bytes(filename))
         buffer = await self._read_range(entry.local_header_offset, entry.__cstruct__.size + 64)  # 预留64字节的变长字段
 
         # 仅头部模式解析 LocalFileHeader
