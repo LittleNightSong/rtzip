@@ -1,11 +1,14 @@
 import struct
 from collections.abc import Buffer
+from fnmatch import fnmatch
 from typing import AsyncGenerator
 
 from .algorithm_register import is_algorithm_available, get_algorithm_handler
 from .const import *
-from .errors import UnsupportedAlgorithmError, UnsupportedCryptoError, UnsupportedDataDescriptorError
+from .errors import UnsupportedAlgorithmError
 from .models import EOCD, Zip64EOCD, CDEntry, LocalFileHeader
+from .zip_crypto import zipcrypto_wrapper
+from .path_methods import normpath
 
 
 class DataSource:
@@ -47,7 +50,7 @@ class RemoteZip:
     （RemoteZip 不会缓存已读取的文件，你需要自己保证数据复用）
 
     :ivar source: 数据源回调对象
-    :ivar cd_info: 中央仓库元数据（EOCD），可能为 EOCD、Zip64EOCD 或 None 值
+    :ivar zip_info: 中央仓库元数据（EOCD），可能为 EOCD、Zip64EOCD 或 None 值
     :ivar files: 中央目录文件列表
     :ivar file_mapping: 构建的文件映射表，可能为 None
     :ivar is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
@@ -62,24 +65,53 @@ class RemoteZip:
     async def _get_total_size(self):
         return await self.source.get_total_size()
 
+    __slots__ = [
+        'source', 'zip_info', 'files', 'file_mapping', 'cached_headers', 'is_zip64',
+        '_namelist'
+    ]
+
     def __init__(self, source: DataSource):
         self.source = source
 
-        self.cd_info: EOCD | Zip64EOCD | None = None
-        self.files: list[CDEntry] = []
+        self.zip_info: EOCD | Zip64EOCD | None = None
+        self.files: list[CDEntry] | None = None
         self.file_mapping: dict[bytes, CDEntry] | None = None
 
-        self.is_zip64 = False
+        self.cached_headers: dict[bytes, LocalFileHeader] = {}
 
-    async def fetch_zip_info(self, initial_chunk=4096, max_cnt=-1, loss_factor: int | float = 2):
+        self.is_zip64 = False
+        self._namelist = None
+
+    def namelist(self):
+        if self._namelist is None:
+            if self.files is None:
+                raise ValueError("No files. Please call `fetch_file_list()` first")
+            self._namelist = [
+                f.filename for f in self.files
+            ]
+
+        return self._namelist
+
+    async def fetch_zip_info(
+            self,
+            initial_chunk=4096,
+            max_cnt=-1,
+            loss_factor: int | float = 2,
+            reuse=True
+    ) -> EOCD | Zip64EOCD:
         """
         获取 zip 文件的元信息（EOCD）
 
+        :param reuse: 如果启用，函数会缓存上一次的获取结果（并保存在 ``.zip_info`` 中），否则将会重新扫描 EOCD 并覆盖旧缓存
         :param initial_chunk: 初始扫描的大小
         :param max_cnt: 最大重试次数
         :param loss_factor: 重试后更新扫描大小的系数
-        :return: 一个 EOCD 或者 Zip64EOCD 对象（如果这个 zip 文件启用了 zip64 扩展）
+        :return: 一个 ``EOCD`` 或者 ``Zip64EOCD`` 对象（如果这个 zip 文件启用了 zip64 扩展）
+
         """
+        if reuse and self.zip_info is not None:
+            return self.zip_info
+
         chunk_size = initial_chunk
 
         last_start = await self._get_total_size()
@@ -95,9 +127,11 @@ class RemoteZip:
 
             signature_pos = buffer.rfind(EOCD_SIGNATURE)
             if signature_pos != -1:
-                self.cd_info = eocd = EOCD.from_buffer(buffer[signature_pos:])
+                self.zip_info = eocd = EOCD.from_buffer(buffer[signature_pos:])
                 # return cnt
                 if eocd.total_entries == 0xFFFFFFFF or eocd.cd_offset == 0xFFFFFFFF or eocd.cd_size == 0xFFFFFFFF:
+                    # 处理 zip64 扩展
+                    # 我们需要解析 Locator 并定位到 Zip64 EOCD 获取信息
                     self.is_zip64 = True
 
                     # 继续获取 zip64 的 eocd
@@ -151,10 +185,10 @@ class RemoteZip:
 
                     # print(zip64_eocd)
 
-                    self.cd_info = zip64_eocd
-                    return self.cd_info
+                    self.zip_info = zip64_eocd
+                    return self.zip_info
                 else:
-                    return self.cd_info
+                    return self.zip_info
 
             if max_cnt != -1 and cnt >= max_cnt:
                 raise RuntimeError
@@ -164,15 +198,24 @@ class RemoteZip:
         else:
             raise RuntimeError
 
-    async def fetch_file_list(self, ignore_extra: bool = False) -> list[CDEntry]:
+    async def fetch_file_list(self, ignore_extra: bool = False, reuse=True) -> list[CDEntry]:
         """
         从远程 zip 的中央目录获取文件列表
 
+        自动在 `zip_info` 缺失的情况下拉取
+
         :param ignore_extra: 是否忽略无法解析的片段并返回已有的内容
+        :param reuse: 如果启用，将自动缓存已拉取的数据（位于 ``.files`` 属性）并复用它，否则将重新拉取文件列表并覆盖缓存
         :return: 一个列表，包含所有获取到的文件
         """
-        assert self.cd_info
-        eocd = self.cd_info
+
+        if reuse and self.files is not None:
+            return self.files
+
+        if self.zip_info is None:
+            self.zip_info = await self.fetch_zip_info()
+
+        eocd = self.zip_info
         buffer = bytearray()
         files = []
 
@@ -200,23 +243,29 @@ class RemoteZip:
                     break
 
         if buffer and not ignore_extra:
-            # print("Read Entries: ", len(files))
-            # print("Buffer:", buffer)
             raise ValueError()
 
         self.files = files
 
+        self._namelist = None
+
         return files
 
-    async def fetch_file_header(self, filename=None, entry: CDEntry | None = None):
+    async def fetch_file_header(self, filename=None, entry: CDEntry | None = None, reuse=True):
         """
         获取 filename 对应的本地文件头
 
+        :param reuse: 如果启用，将自动缓存已获取的本地文件头，否则将重新拉取并覆盖缓存
         :param filename: 文件名称，可选
         :param entry: CDEntry 对象，可选
         :return: 一个 LocalFileHeader 对象，以及在解析时获取到的多余数据（在文件本身很小的时候，这一段数据可以直接解析出文件内容）
         """
-        entry = entry or self.find_file_entry(bytes(filename))
+
+        entry = entry or self.find_file_entry(normpath(bytes(filename)))
+
+        if reuse and entry.filename in self.cached_headers:
+            return self.cached_headers[entry.filename]
+
         buffer = await self._read_range(entry.local_header_offset, entry.__cstruct__.size + 64)  # 预留64字节的变长字段
 
         # 仅头部模式解析 LocalFileHeader
@@ -236,6 +285,14 @@ class RemoteZip:
         header.raw_extra_fields = bytes(extra_fields)
 
         header.fix_by_zip64()
+
+        if entry.has_data_descriptor:
+            header.compressed_size = entry.compressed_size
+            header.uncompressed_size = entry.original_size
+            header.crc32 = entry.crc32_raw
+
+        self.cached_headers[entry.filename] = header
+
         return header, buffer[pos:]  # 返回剩余的数据部分
 
     def build_mapping(self):
@@ -246,6 +303,9 @@ class RemoteZip:
 
         :return: 构建完成的映射表
         """
+        if self.files is None:
+            raise ValueError("No files. Please call `fetch_file_list` first.")
+
         m = self.file_mapping = {}
         for entry in self.files:
             m[entry.filename] = entry
@@ -261,9 +321,17 @@ class RemoteZip:
 
         若是发现文件不存在，将会抛出 FileNotFoundError
 
-        :param filename:
-        :return:
+        :param filename: 文件名
+        :raise FileNotFoundError: 当找不到所需要的文件时抛出
+        :raise ValueError: 当本地没有文件列表时抛出
+        :return: 文件的 CDEntry 对象
         """
+
+        filename = normpath(filename)
+
+        if self.files is None:
+            raise ValueError("No files. Please call `fetch_file_list` first.")
+
         if self.file_mapping:
             return self.file_mapping[filename]
         else:
@@ -273,51 +341,117 @@ class RemoteZip:
             else:
                 raise FileNotFoundError(filename)
 
-    async def _stream_single_file(self, filename: bytes):
+    async def _stream_single_file(self, filename: bytes, kwargs):
         entry = self.find_file_entry(filename)
-
-        if entry.is_encrypted:
-            raise UnsupportedCryptoError()
-
-        if entry.has_data_descriptor:
-            raise UnsupportedDataDescriptorError()
 
         if not is_algorithm_available(entry.algorithm):
             raise UnsupportedAlgorithmError(entry.algorithm)
 
         header, buffer = await self.fetch_file_header(entry=entry)
-        # print(header)
         real_data_offset = entry.local_header_offset + header.data_offset
+
+        if entry.has_data_descriptor:
+            header.compressed_size = entry.compressed_size
+            header.uncompressed_size = entry.original_size
+            header.crc32 = entry.crc32_raw
 
         if entry.compressed_size < len(buffer):
             raw_generator = single_chunk_wrapper(buffer[:entry.compressed_size])
         else:
             raw_generator = self._read_range_stream(real_data_offset, entry.compressed_size)
 
-        return get_algorithm_handler(entry.algorithm)(raw_generator)
+        if entry.is_encrypted and entry.algorithm != 0x63:  # 暂时只支持 Zip-Crypto (Legacy)
+            raw_generator = zipcrypto_wrapper(raw_generator, entry, header, kwargs)
 
-    async def stream_single_file(self, filename: bytes):
+        # 对于 zip-aes 的支持可以作为 algorithm-handler
+        # 它会把 algorithm 设成 0x63，可以直接让它路由到我们的 AES 解密包装器上
+
+        return get_algorithm_handler(entry.algorithm)(raw_generator, entry, header, kwargs)
+
+    async def stream(self, filename: bytes, **kwargs):
         """
         流式读取一个压缩包内的文件
 
         :param filename: 压缩包内的文件名
         :return:
         """
-        gen = await self._stream_single_file(filename)
+        gen = await self._stream_single_file(normpath(filename), kwargs)
         async for i in gen:
             yield i
 
-    async def load_single_file(self, filename: bytes) -> bytearray:
+    async def read(self, filename: bytes, **kwargs) -> bytearray:
         """
-        直接加载文件的内容
+        直接全量加载文件的内容
 
         建议在小文件上使用此方法
 
         :param filename: 压缩包内的文件名
-        :return:
+        :return: 一个 bytearray 表示文件内容
         """
         buffer = bytearray()
-        async for i in self.stream_single_file(filename):
+        async for i in self.stream(filename, **kwargs):
             buffer.extend(i)
 
         return buffer
+
+
+    async def resolve(self, filename: bytes, max_resolve=24, **kwargs) -> bytes:
+        entry = self.find_file_entry(filename)
+        target = entry.filename
+
+        cnt = 0
+        while entry.is_symlink:
+            target = await self.read(filename, **kwargs)
+            try:
+                entry = self.find_file_entry(target)
+            except FileNotFoundError:
+                break
+
+            cnt += 1
+
+        return target
+
+    def listdir(self, path: bytes) -> list[bytes]:
+        path = normpath(path).removesuffix(b'/') + b'/'
+        return [
+            i
+            for i in self.namelist()
+            if i.startswith(path) and i != path  # 确保不会包含目录本身
+        ]
+
+    def exists(self, path: bytes) -> bool:
+        return normpath(path) in self.namelist()
+
+    def entry(self, path: bytes) -> CDEntry:
+        i = self.namelist().index(normpath(path))
+        if i == -1:
+            raise FileNotFoundError()
+
+        return self.files[i]
+
+    def original_size(self, path: bytes) -> int:
+        return self.entry(path).original_size
+
+    def compressed_size(self, path: bytes) -> int:
+        return self.entry(path).compressed_size
+
+    async def header(self, path: bytes):
+        return await self.fetch_file_header(
+            filename=normpath(path)
+        )
+
+    async def read_text(self, path: bytes, encoding='utf-8', errors='strict') -> str:
+        return (await self.read(path)).decode(encoding, errors=errors)
+
+    def rglob(self, pattern):
+        for file in self._namelist:
+            if fnmatch(file, pattern):
+                yield file
+
+    def rglob_entries(self, pattern):
+        if self.files is None:
+            raise ValueError("No files. Please call `fetch_file_list` first.")
+
+        for file in self.files:
+            if fnmatch(file.filename, pattern):
+                yield file

@@ -61,11 +61,11 @@ async def main():
     # 返回映射表本身，同时缓存在 rz.file_mapping 中
 
     # 一次性读取一个文件的全量数据
-    data = await rz.load_single_file(b'filename')
+    data = await rz.read(b'filename')
 
     # 流式读取一个文件的数据
     buffer = bytearray()
-    async for i in rz.stream_single_file(b'filename'):
+    async for i in rz.stream(b'filename'):
         buffer.extend(i)
 
     # 获取一个文件的元数据信息

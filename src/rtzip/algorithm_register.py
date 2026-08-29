@@ -1,7 +1,9 @@
 from collections.abc import Buffer
-from typing import Callable, AsyncGenerator
+from typing import Callable, AsyncGenerator, Any
 
-AlgorithmHandler = Callable[[AsyncGenerator[Buffer, None]], AsyncGenerator[bytes | bytearray | memoryview, None]]
+from .models import CDEntry, LocalFileHeader
+
+AlgorithmHandler = Callable[[AsyncGenerator[Buffer, None], CDEntry, LocalFileHeader, dict[str, Any]], AsyncGenerator[bytes | bytearray | memoryview, None]]
 
 algorithm_mapping: dict[int, AlgorithmHandler] = {}
 
@@ -12,7 +14,6 @@ def algorithm_handler(algorithm: int, override=False):
 
     :param algorithm: 压缩算法 ID
     :param override: 如果你希望覆盖一个已注册的包装器，请设置为 True，否则将会阻止可能的覆盖行为
-    :param decorator.func: 被包装的函数，接受一个异步生成器，返回一个异步生成器
     :return:
     """
     if not override and algorithm in algorithm_mapping:

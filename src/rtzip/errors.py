@@ -8,3 +8,7 @@ class UnsupportedCryptoError(Exception):
 
 class UnsupportedDataDescriptorError(Exception):
     ...
+
+
+class WrongPasswordError(Exception):
+    ...

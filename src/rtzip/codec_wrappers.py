@@ -4,7 +4,7 @@ from .algorithm_register import algorithm_handler
 
 
 @algorithm_handler(0x0008)
-async def deflate_wrapper(gen):
+async def deflate_wrapper(gen, entry, header, ext):
     import zlib
     decompresser = zlib.decompressobj(-15)  # 禁用 zlib 头部
     async for chunk in gen:
@@ -15,13 +15,13 @@ async def deflate_wrapper(gen):
 
 
 @algorithm_handler(0x0000)
-async def raw_wrapper(gen):
+async def raw_wrapper(gen, entry, header, ext):
     async for chunk in gen:
         yield chunk
 
 
 @algorithm_handler(0x000E)
-async def lzma_wrapper(gen):
+async def lzma_wrapper(gen, entry, header, ext):
     import lzma
     decompressor = lzma.LZMADecompressor()
 
@@ -41,7 +41,7 @@ async def lzma_wrapper(gen):
         )
 
 @algorithm_handler(0x000C)
-async def bz2_wrapper(gen):
+async def bz2_wrapper(gen, entry, header, ext):
     import bz2
     decompressor = bz2.BZ2Decompressor()
 
@@ -66,7 +66,7 @@ async def bz2_wrapper(gen):
 
 if sys.version_info >= (3, 14):
     @algorithm_handler(0x000D)
-    async def zstd_wrapper(gen):  # Not Tested
+    async def zstd_wrapper(gen, entry, header, ext):  # Not Tested
         import warnings
         warnings.warn("ZStandard support is experimental and has not been tested")
 

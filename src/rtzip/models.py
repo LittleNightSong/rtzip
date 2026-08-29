@@ -197,6 +197,10 @@ class CDEntry(obs.Struct):
         return bool(self.flags & 0b100)
 
     @property
+    def is_symlink(self):
+        return (self.outer_file_attrs >> 16) & 0xF000 == 0xA000
+
+    @property
     def extra_fields(self) -> dict[int, bytes]:
         """
         解析后的扩展字段字典
