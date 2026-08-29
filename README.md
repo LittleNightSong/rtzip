@@ -79,6 +79,15 @@ async def main():
     # 但这时你要自己保证这个 entry 对象是有效的
     # 将返回一个 LocalFileHeader 对象
     header = await rz.fetch_file_header(entry=entry)
+    
+    # 解析路径
+    final_filename = await rz.resolve(b"path/to/your/symlink")
+    
+    # 枚举目录
+    files = rz.listdir(b'path/to/your/dir')
+    
+    # 模式匹配
+    matched_files = rz.rglob(b'path/to/your/dir/*.py')
 
 
 if __name__ == '__main__':
@@ -97,7 +106,7 @@ from rtzip import algorithm_handler
 
 
 @algorithm_handler(0x000A)
-async def ppmd_wrapper(raw_generator):
+async def ppmd_wrapper(raw_generator, entry, header, ctx):
     # PPMd 流式解压（API 取决于具体库）
     decomp = ppmd.Ppmd7Decompressor()
     async for chunk in raw_generator:
@@ -109,8 +118,13 @@ async def ppmd_wrapper(raw_generator):
 # 如果想要重写某个内置的包装器
 # 你需要指定 `override=True`，否则程序将会阻止覆盖行为
 @algorithm_handler(0x0008, override=True)
-async def your_deflate_wrapper(raw_generator):
+async def your_deflate_wrapper(raw_generator, entry, header, ctx):
     ...
+
+# raw generator 是一个异步生成器，每次迭代产生一个 bytes/bytearray/memoryview 对象
+# entry 是这个文件的 CDEntry 对象
+# header 是这个文件的 LocalFileHeader 对象
+# ctx 是一个字典，一般为调用 read 或其它方法的 kwargs
 
 ```
 
