@@ -460,8 +460,8 @@ wheels = [
 
 [[package]]
 name = "rtzip"
-version = "0.3.1"
-source = { virtual = "." }
+version = "0.4.0"
+source = { editable = "." }
 dependencies = [
     { name = "obstruct" },
     { name = "pyaes" },
