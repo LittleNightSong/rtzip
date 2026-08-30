@@ -39,7 +39,7 @@ class DataSource:
         """
 
 
-async def single_chunk_wrapper(__data: Buffer, /):
+async def single_chunk_wrapper[T](__data: T, /):
     yield __data
 
 
@@ -54,6 +54,10 @@ class RemoteZip:
     :ivar files: 中央目录文件列表
     :ivar file_mapping: 构建的文件映射表，可能为 None
     :ivar is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
+    :ivar context: 上下文字典
+    上下文字典信息：
+    - ``pwd``: 字节形式的密码，用于解密加密的 zip 文件
+
     """
 
     async def _read_range(self, offset, length):
@@ -81,7 +85,7 @@ class RemoteZip:
 
         self.is_zip64 = False
         self.context = kwargs
-        self._namelist = None
+        self._namelist: list[bytes] | None = None
 
     def _merge_context(self, overrides: dict[str, Any]):
         return {
@@ -89,10 +93,15 @@ class RemoteZip:
             **overrides
         }
 
-    def namelist(self):
+    def namelist(self) -> list[bytes]:
+        """
+        获取所有的文件名（bytes）列表
+        :return: 文件名列表
+        """
         if self._namelist is None:
             if self.files is None:
                 raise ValueError("No files. Please call `fetch_file_list()` first")
+
             self._namelist = [
                 f.filename for f in self.files
             ]
@@ -167,7 +176,7 @@ class RemoteZip:
 
                     # print(zip64_eocd_disk_id, zip64_eocd_offset, zip64_total_disks)
 
-                    zip64_eocd_data = await self._read_range(zip64_eocd_offset, 96)
+                    zip64_eocd_data = bytes(await self._read_range(zip64_eocd_offset, 96))
                     # print(zip64_eocd_data[:64])
                     assert zip64_eocd_data[:4] == ZIP64_EOCD_SIGNATURE
 
@@ -324,7 +333,7 @@ class RemoteZip:
         从本地已有的数据获取 filename 对应的 CDEntry 对象
 
         如果已有构建好的文件映射，则直接查找文件映射内容
-        否则将遍历中央仓库找到文件
+        否则将遍历中央目录找到文件
 
         若是发现文件不存在，将会抛出 FileNotFoundError
 
@@ -390,7 +399,7 @@ class RemoteZip:
 
     async def read(self, filename: bytes, **kwargs) -> bytearray:
         """
-        直接全量加载文件的内容
+        全量加载文件的内容（底层仍然调用 .stream 方法）
 
         建议在小文件上使用此方法
 
@@ -404,7 +413,16 @@ class RemoteZip:
         return buffer
 
 
-    async def resolve(self, filename: bytes, max_resolve=24, **kwargs) -> bytes:
+    async def resolve(self, filename: bytes, max_resolve: float | int = 24, **kwargs) -> bytes:
+        """
+        解析一个文件的最终路径（基于 zip 的符号链接规范）
+
+        :param filename: 文件名
+        :param max_resolve: 最大可解析次数（你可以通过传入 ``float('inf')`` 来不限制解析次数，但不建议这样做
+        :param kwargs: 上下文信息
+        :raise ValueError: 当解析次数达到指定的上限时抛出
+        :return:
+        """
         kwargs = self._merge_context(kwargs)
         entry = self.find_file_entry(filename)
         target = entry.filename
@@ -418,6 +436,9 @@ class RemoteZip:
                 break
 
             cnt += 1
+
+            if cnt >= max_resolve:
+                raise ValueError("Too many resolved files")
 
         return target
 
@@ -454,7 +475,7 @@ class RemoteZip:
         return (await self.read(path, **kwargs)).decode(encoding, errors=errors)
 
     def rglob(self, pattern):
-        for file in self._namelist:
+        for file in self.namelist():
             if fnmatch(file, pattern):
                 yield file
 

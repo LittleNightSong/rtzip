@@ -57,7 +57,7 @@ def decrypt_byte(k2: int) -> int:
 
 
 async def zipcrypto_wrapper(
-        raw_data: AsyncGenerator[bytes, None],
+        raw_data: AsyncGenerator[bytes | bytearray | memoryview, None],
         entry: CDEntry,
         header: LocalFileHeader,
         ctx: dict[str , Any]
