@@ -1,5 +1,4 @@
 # Written by DeepSeek
-import itertools
 import warnings
 
 from cryptography.hazmat.primitives import hashes
@@ -25,13 +24,12 @@ class CryptographyAESCipher:
         self._c = 1
         self._b = bytearray()
 
-
     @classmethod
     def get_cipher(cls, enc_key: bytes):
         return cls(enc_key)
 
     def update(self, encrypted_data: bytes) -> bytes:
-        print(f"拼接：{len(self._b)} + {len(encrypted_data)} = {len(self._b) + len(encrypted_data)}")
+        # print(f"拼接：{len(self._b)} + {len(encrypted_data)} = {len(self._b) + len(encrypted_data)}")
         self._b.extend(encrypted_data)
         buffer = bytearray()
 
@@ -49,7 +47,7 @@ class CryptographyAESCipher:
 
             else:
                 self._b = self._b[offset:]
-                print("裁剪：", len(self._b))
+                # print("裁剪：", len(self._b))
                 break
 
         return buffer
