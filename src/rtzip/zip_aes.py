@@ -291,7 +291,7 @@ def zip_aes_wrapper(raw_data, entry, header, ctx):
     )
 
 
-def install(pbkdf2_hmac: PBKDF2_HMAC_FunctionType, aes_cipher: type[AESDecryptor]):
-    pbkdf2_hmac_implement(pbkdf2_hmac)
-    aes_cipher_implement(aes_cipher)
+def install(pbkdf2_hmac: PBKDF2_HMAC_FunctionType | None = None, aes_cipher: type[AESDecryptor] | None = None):
+    pbkdf2_hmac_implement(pbkdf2_hmac) if pbkdf2_hmac else None
+    aes_cipher_implement(aes_cipher) if aes_cipher else None
     algorithm_handler(0x0063)(zip_aes_wrapper) if not is_algorithm_handlier_available(0x0063) else None
