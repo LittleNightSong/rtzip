@@ -271,7 +271,7 @@ class RemoteZip:
         entry = entry or self.find_file_entry(normpath(bytes(filename)))
 
         if reuse and entry.filename in self.cached_headers:
-            return self.cached_headers[entry.filename]
+            return self.cached_headers[entry.filename], b''
 
         buffer = await self._read_range(entry.local_header_offset, entry.__cstruct__.size + 64)  # 预留64字节的变长字段
 

@@ -5,8 +5,8 @@ from typing import Protocol
 
 from obstruct import Struct, u16, u8
 
-from .errors import UnsupportedAlgorithmError, WrongPasswordError
 from .algorithm_register import algorithm_handler, is_algorithm_handlier_available, get_algorithm_handler
+from .errors import UnsupportedAlgorithmError, WrongPasswordError
 
 
 @dataclasses.dataclass(slots=True)
@@ -175,7 +175,7 @@ async def zip_aes_stream_decryptor(
     encrypted_data_len = compressed_size - enc_header_len - mac_length
 
     # 获取派生密钥
-    key_material = call_pbkdf2_hmac(pwd, 2 * key_len + 2, salt, 1000)
+    key_material = call_pbkdf2_hmac(pwd, 2 * key_len + 2, bytes(salt), 1000)
     enc_key = key_material[:key_len]
     hmac_key = key_material[key_len:key_len * 2]
     checksum = key_material[-2:]
@@ -235,6 +235,10 @@ async def zip_aes_stream_decryptor(
         h.update(chunk)
 
         # print("Get chunk {}/{}".format(size, encrypted_data_len))
+
+    x = cipher.finalize()
+    if x:
+        yield x
 
     # 该读取 MAC 了
 
