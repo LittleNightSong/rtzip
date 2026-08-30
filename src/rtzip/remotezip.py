@@ -474,12 +474,12 @@ class RemoteZip:
     async def read_text(self, path: bytes, encoding='utf-8', errors='strict', **kwargs) -> str:
         return (await self.read(path, **kwargs)).decode(encoding, errors=errors)
 
-    def rglob(self, pattern):
+    def rglob(self, pattern: bytes):
         for file in self.namelist():
             if fnmatch(file, pattern):
                 yield file
 
-    def rglob_entries(self, pattern):
+    def rglob_entries(self, pattern: bytes):
         if self.files is None:
             raise ValueError("No files. Please call `fetch_file_list` first.")
 
