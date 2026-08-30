@@ -1,9 +1,9 @@
 import struct
 from collections.abc import Buffer
 from fnmatch import fnmatch
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Any
 
-from .algorithm_register import is_algorithm_available, get_algorithm_handler
+from .algorithm_register import is_algorithm_handlier_available, get_algorithm_handler
 from .const import *
 from .errors import UnsupportedAlgorithmError
 from .models import EOCD, Zip64EOCD, CDEntry, LocalFileHeader
@@ -66,11 +66,11 @@ class RemoteZip:
         return await self.source.get_total_size()
 
     __slots__ = [
-        'source', 'zip_info', 'files', 'file_mapping', 'cached_headers', 'is_zip64',
+        'source', 'zip_info', 'files', 'file_mapping', 'cached_headers', 'is_zip64', 'context',
         '_namelist'
     ]
 
-    def __init__(self, source: DataSource):
+    def __init__(self, source: DataSource, **kwargs):
         self.source = source
 
         self.zip_info: EOCD | Zip64EOCD | None = None
@@ -80,7 +80,14 @@ class RemoteZip:
         self.cached_headers: dict[bytes, LocalFileHeader] = {}
 
         self.is_zip64 = False
+        self.context = kwargs
         self._namelist = None
+
+    def _merge_context(self, overrides: dict[str, Any]):
+        return {
+            **self.context,
+            **overrides
+        }
 
     def namelist(self):
         if self._namelist is None:
@@ -342,9 +349,11 @@ class RemoteZip:
                 raise FileNotFoundError(filename)
 
     async def _stream_single_file(self, filename: bytes, kwargs):
+        kwargs = self._merge_context(kwargs)
+
         entry = self.find_file_entry(filename)
 
-        if not is_algorithm_available(entry.algorithm):
+        if not is_algorithm_handlier_available(entry.algorithm):
             raise UnsupportedAlgorithmError(entry.algorithm)
 
         header, buffer = await self.fetch_file_header(entry=entry)
@@ -396,6 +405,7 @@ class RemoteZip:
 
 
     async def resolve(self, filename: bytes, max_resolve=24, **kwargs) -> bytes:
+        kwargs = self._merge_context(kwargs)
         entry = self.find_file_entry(filename)
         target = entry.filename
 
@@ -440,8 +450,8 @@ class RemoteZip:
             filename=normpath(path)
         )
 
-    async def read_text(self, path: bytes, encoding='utf-8', errors='strict') -> str:
-        return (await self.read(path)).decode(encoding, errors=errors)
+    async def read_text(self, path: bytes, encoding='utf-8', errors='strict', **kwargs) -> str:
+        return (await self.read(path, **kwargs)).decode(encoding, errors=errors)
 
     def rglob(self, pattern):
         for file in self._namelist:

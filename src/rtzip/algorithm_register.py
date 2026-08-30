@@ -1,9 +1,32 @@
-from collections.abc import Buffer
-from typing import Callable, AsyncGenerator, Any
+from typing import AsyncGenerator, Any, Protocol, runtime_checkable
 
+from .errors import UnsupportedAlgorithmError
 from .models import CDEntry, LocalFileHeader
 
-AlgorithmHandler = Callable[[AsyncGenerator[Buffer, None], CDEntry, LocalFileHeader, dict[str, Any]], AsyncGenerator[bytes | bytearray | memoryview, None]]
+type IndexAcceptedTypes = bytes | bytearray | memoryview
+
+
+@runtime_checkable
+class AlgorithmHandler(Protocol):
+    def __call__(
+            self,
+            raw_data: AsyncGenerator[IndexAcceptedTypes, None],
+            entry: CDEntry,
+            header: LocalFileHeader,
+            context: dict[str, Any],
+            /
+    ) -> AsyncGenerator[IndexAcceptedTypes, None]:
+        """
+        压缩算法处理器
+
+        :param raw_data: 原始数据流（异步生成器）
+        :param entry: 当前文件的 CDEntry 对象
+        :param header: 当前文件的 LocalFileHeader 对象（已经过文件描述符修补）
+        :param context: 上下文信息
+        :return:
+        """
+        ...
+
 
 algorithm_mapping: dict[int, AlgorithmHandler] = {}
 
@@ -33,10 +56,16 @@ def get_algorithm_handler(algorithm: int) -> AlgorithmHandler:
     :param algorithm: 压缩算法 ID
     :return: AlgorithmHandler 可调用对象，接受一个异步生成器，返回一个异步生成器
     """
-    return algorithm_mapping[algorithm]
+    try:
+        return algorithm_mapping[algorithm]
+    except KeyError:
+        raise UnsupportedAlgorithmError(algorithm)
 
 
-def is_algorithm_available(algorithm: int) -> bool:
+def get_algorithm_handler_safe(algorithm: int) -> AlgorithmHandler | None:
+    return algorithm_mapping.get(algorithm)
+
+def is_algorithm_handlier_available(algorithm: int) -> bool:
     """
     判断某个压缩算法是否已有注册的包装器
 

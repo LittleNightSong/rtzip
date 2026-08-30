@@ -6,7 +6,7 @@ from typing import Protocol
 from obstruct import Struct, u16, u8
 
 from .errors import UnsupportedAlgorithmError, WrongPasswordError
-from .algorithm_register import algorithm_handler, is_algorithm_available, get_algorithm_handler
+from .algorithm_register import algorithm_handler, is_algorithm_handlier_available, get_algorithm_handler
 
 
 @dataclasses.dataclass(slots=True)
@@ -278,7 +278,7 @@ def zip_aes_wrapper(raw_data, entry, header, ctx):
     # 获取解密后的压缩格式
     algorithm = aes_extra.compression
 
-    if not is_algorithm_available(algorithm):
+    if not is_algorithm_handlier_available(algorithm):
         raise UnsupportedAlgorithmError(algorithm)
 
     return get_algorithm_handler(algorithm)(
@@ -290,4 +290,4 @@ def zip_aes_wrapper(raw_data, entry, header, ctx):
 def install(pbkdf2_hmac: PBKDF2_HMAC_FunctionType, aes_cipher: type[AESDecryptor]):
     pbkdf2_hmac_implement(pbkdf2_hmac)
     aes_cipher_implement(aes_cipher)
-    algorithm_handler(0x0063)(zip_aes_wrapper) if not is_algorithm_available(0x0063) else None
+    algorithm_handler(0x0063)(zip_aes_wrapper) if not is_algorithm_handlier_available(0x0063) else None
