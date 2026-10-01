@@ -1,14 +1,13 @@
 import struct
-from collections.abc import Buffer
 from fnmatch import fnmatch
 from typing import AsyncGenerator, Any
 
 from .algorithm_register import is_algorithm_handlier_available, get_algorithm_handler
 from .const import *
-from .errors import UnsupportedAlgorithmError
+from .errors import UnsupportedAlgorithmError, BadZipError
 from .models import EOCD, Zip64EOCD, CDEntry, LocalFileHeader
-from .zip_crypto import zipcrypto_wrapper
 from .path_methods import normpath
+from .zip_crypto import zipcrypto_wrapper
 
 
 class DataSource:
@@ -43,23 +42,7 @@ async def single_chunk_wrapper[T](__data: T, /):
     yield __data
 
 
-class RemoteZip:
-    """
-    远程 Zip 文件访问器
-
-    （RemoteZip 不会缓存已读取的文件，你需要自己保证数据复用）
-
-    :ivar source: 数据源回调对象
-    :ivar zip_info: 中央仓库元数据（EOCD），可能为 EOCD、Zip64EOCD 或 None 值
-    :ivar files: 中央目录文件列表
-    :ivar file_mapping: 构建的文件映射表，可能为 None
-    :ivar is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
-    :ivar context: 上下文字典
-    上下文字典信息：
-    - ``pwd``: 字节形式的密码，用于解密加密的 zip 文件
-
-    """
-
+class LowLevelRemoteZip:
     async def _read_range(self, offset, length):
         return await self.source.read_range(offset, length)
 
@@ -70,22 +53,25 @@ class RemoteZip:
         return await self.source.get_total_size()
 
     __slots__ = [
-        'source', 'zip_info', 'files', 'file_mapping', 'cached_headers', 'is_zip64', 'context',
-        '_namelist'
+        'source', 'lowerlevel_eocd', 'lowlevel_central_directory', 'lowerlevel_file_mapping', 'cached_headers', '_is_zip64', 'context',
     ]
 
-    def __init__(self, source: DataSource, **kwargs):
+    def __init__(self, source: DataSource, **context):
         self.source = source
 
-        self.zip_info: EOCD | Zip64EOCD | None = None
-        self.files: list[CDEntry] | None = None
-        self.file_mapping: dict[bytes, CDEntry] | None = None
+        self.lowerlevel_eocd: EOCD | Zip64EOCD | None = None
+        self.lowlevel_central_directory: list[CDEntry] | None = None
+        self.lowerlevel_file_mapping: dict[bytes, CDEntry] | None = None
 
         self.cached_headers: dict[bytes, LocalFileHeader] = {}
 
-        self.is_zip64 = False
-        self.context = kwargs
-        self._namelist: list[bytes] | None = None
+        self._is_zip64 = False
+
+        self.context = context
+
+    @property
+    def is_zip64(self):
+        return self._is_zip64
 
     def _merge_context(self, overrides: dict[str, Any]):
         return {
@@ -93,22 +79,7 @@ class RemoteZip:
             **overrides
         }
 
-    def namelist(self) -> list[bytes]:
-        """
-        获取所有的文件名（bytes）列表
-        :return: 文件名列表
-        """
-        if self._namelist is None:
-            if self.files is None:
-                raise ValueError("No files. Please call `fetch_file_list()` first")
-
-            self._namelist = [
-                f.filename for f in self.files
-            ]
-
-        return self._namelist
-
-    async def fetch_zip_info(
+    async def lowerlevel_fetch_eocd(
             self,
             initial_chunk=4096,
             max_cnt=-1,
@@ -125,8 +96,8 @@ class RemoteZip:
         :return: 一个 ``EOCD`` 或者 ``Zip64EOCD`` 对象（如果这个 zip 文件启用了 zip64 扩展）
 
         """
-        if reuse and self.zip_info is not None:
-            return self.zip_info
+        if reuse and self.lowerlevel_eocd is not None:
+            return self.lowerlevel_eocd
 
         chunk_size = initial_chunk
 
@@ -143,12 +114,12 @@ class RemoteZip:
 
             signature_pos = buffer.rfind(EOCD_SIGNATURE)
             if signature_pos != -1:
-                self.zip_info = eocd = EOCD.from_buffer(buffer[signature_pos:])
+                self.lowerlevel_eocd = eocd = EOCD.from_buffer(buffer[signature_pos:])
                 # return cnt
                 if eocd.total_entries == 0xFFFFFFFF or eocd.cd_offset == 0xFFFFFFFF or eocd.cd_size == 0xFFFFFFFF:
                     # 处理 zip64 扩展
                     # 我们需要解析 Locator 并定位到 Zip64 EOCD 获取信息
-                    self.is_zip64 = True
+                    self._is_zip64 = True
 
                     # 继续获取 zip64 的 eocd
                     # zip64 locator 在 eocd 前的 20 字节处
@@ -201,10 +172,10 @@ class RemoteZip:
 
                     # print(zip64_eocd)
 
-                    self.zip_info = zip64_eocd
-                    return self.zip_info
+                    self.lowerlevel_eocd = zip64_eocd
+                    return self.lowerlevel_eocd
                 else:
-                    return self.zip_info
+                    return self.lowerlevel_eocd
 
             if max_cnt != -1 and cnt >= max_cnt:
                 raise RuntimeError
@@ -214,7 +185,7 @@ class RemoteZip:
         else:
             raise RuntimeError
 
-    async def fetch_file_list(self, ignore_extra: bool = False, reuse=True) -> list[CDEntry]:
+    async def lowerlevel_fetch_central_directory(self, ignore_extra: bool = False, reuse=True) -> list[CDEntry]:
         """
         从远程 zip 的中央目录获取文件列表
 
@@ -225,13 +196,13 @@ class RemoteZip:
         :return: 一个列表，包含所有获取到的文件
         """
 
-        if reuse and self.files is not None:
-            return self.files
+        if reuse and self.lowlevel_central_directory is not None:
+            return self.lowlevel_central_directory
 
-        if self.zip_info is None:
-            self.zip_info = await self.fetch_zip_info()
+        if self.lowerlevel_eocd is None:
+            self.lowerlevel_eocd = await self.lowerlevel_fetch_eocd()
 
-        eocd = self.zip_info
+        eocd = self.lowerlevel_eocd
         buffer = bytearray()
         files = []
 
@@ -241,7 +212,7 @@ class RemoteZip:
 
             # print(f'{len(files) + 1:03} Get Entry', entry)
 
-            if self.is_zip64:
+            if self._is_zip64:
                 entry.fix_by_zip64()
 
             files.append(entry)
@@ -259,15 +230,12 @@ class RemoteZip:
                     break
 
         if buffer and not ignore_extra:
-            raise ValueError()
+            raise BadZipError('Extra data at end of the central directory entries.')
 
-        self.files = files
-
-        self._namelist = None
-
+        self.lowlevel_central_directory = files
         return files
 
-    async def fetch_file_header(self, filename=None, entry: CDEntry | None = None, reuse=True):
+    async def lowerlevel_fetch_local_file_header(self, filename=None, entry: CDEntry | None = None, reuse=True):
         """
         获取 filename 对应的本地文件头
 
@@ -277,7 +245,7 @@ class RemoteZip:
         :return: 一个 LocalFileHeader 对象，以及在解析时获取到的多余数据（在文件本身很小的时候，这一段数据可以直接解析出文件内容）
         """
 
-        entry = entry or self.find_file_entry(normpath(bytes(filename)))
+        entry = entry or self.lowerlevel_find_file_entry(filename)
 
         if reuse and entry.filename in self.cached_headers:
             return self.cached_headers[entry.filename], b''
@@ -311,61 +279,13 @@ class RemoteZip:
 
         return header, buffer[pos:]  # 返回剩余的数据部分
 
-    def build_mapping(self):
-        """
-        构建文件映射表，格式为 filename -> CDEntry
-
-        重复调用将会重建映射表
-
-        :return: 构建完成的映射表
-        """
-        if self.files is None:
-            raise ValueError("No files. Please call `fetch_file_list` first.")
-
-        m = self.file_mapping = {}
-        for entry in self.files:
-            m[entry.filename] = entry
-
-        return m
-
-    def find_file_entry(self, filename: bytes):
-        """
-        从本地已有的数据获取 filename 对应的 CDEntry 对象
-
-        如果已有构建好的文件映射，则直接查找文件映射内容
-        否则将遍历中央目录找到文件
-
-        若是发现文件不存在，将会抛出 FileNotFoundError
-
-        :param filename: 文件名
-        :raise FileNotFoundError: 当找不到所需要的文件时抛出
-        :raise ValueError: 当本地没有文件列表时抛出
-        :return: 文件的 CDEntry 对象
-        """
-
-        filename = normpath(filename)
-
-        if self.files is None:
-            raise ValueError("No files. Please call `fetch_file_list` first.")
-
-        if self.file_mapping:
-            return self.file_mapping[filename]
-        else:
-            for i in self.files:
-                if i.filename == filename:
-                    return i
-            else:
-                raise FileNotFoundError(filename)
-
-    async def _stream_single_file(self, filename: bytes, kwargs):
+    async def _stream_single_file(self, entry, kwargs):
         kwargs = self._merge_context(kwargs)
-
-        entry = self.find_file_entry(filename)
 
         if not is_algorithm_handlier_available(entry.algorithm):
             raise UnsupportedAlgorithmError(entry.algorithm)
 
-        header, buffer = await self.fetch_file_header(entry=entry)
+        header, buffer = await self.lowerlevel_fetch_local_file_header(entry=entry)
         real_data_offset = entry.local_header_offset + header.data_offset
 
         if entry.has_data_descriptor:
@@ -386,6 +306,111 @@ class RemoteZip:
 
         return get_algorithm_handler(entry.algorithm)(raw_generator, entry, header, kwargs)
 
+    def lowlevel_build_mapping(self):
+        """
+        构建文件映射表，格式为 filename -> CDEntry
+
+        重复调用将会重建映射表
+
+        :return: 构建完成的映射表
+        """
+        if self.lowlevel_central_directory is None:
+            raise ValueError("No files. Please call `fetch_file_list` first.")
+
+        m = self.lowerlevel_file_mapping = {}
+        for entry in self.lowlevel_central_directory:
+            m[entry.filename] = entry
+
+        return m
+
+    def lowerlevel_find_file_entry(self, filename: bytes):
+        """
+        从本地已有的数据获取 filename 对应的 CDEntry 对象
+
+        如果已有构建好的文件映射，则直接查找文件映射内容
+        否则将遍历中央目录找到文件
+
+        若是发现文件不存在，将会抛出 FileNotFoundError
+
+        :param filename: 文件名
+        :raise FileNotFoundError: 当找不到所需要的文件时抛出
+        :raise ValueError: 当本地没有文件列表时抛出
+        :return: 文件的 CDEntry 对象
+        """
+
+        if self.lowlevel_central_directory is None:
+            raise ValueError("No files. Please call `fetch_file_list` first.")
+
+        if self.lowerlevel_file_mapping:
+            return self.lowerlevel_file_mapping[filename]
+        else:
+            for i in self.lowlevel_central_directory:
+                if i.filename == filename:
+                    return i
+            else:
+                raise FileNotFoundError(filename)
+
+
+class RemoteZip(LowLevelRemoteZip):
+    """
+    远程 Zip 文件访问器
+
+    （RemoteZip 不会缓存已读取的文件，你需要自己保证数据复用）
+
+    :ivar source: 数据源回调对象
+    :ivar lowerlevel_eocd: 中央仓库元数据（EOCD），可能为 EOCD、Zip64EOCD 或 None 值
+    :ivar lowlevel_central_directory: 中央目录文件列表
+    :ivar lowerlevel_file_mapping: 构建的文件映射表，可能为 None
+    :ivar _is_zip64: 此 zip 文件是否启动了 zip64 扩展，默认为 False
+    :ivar context: 上下文字典
+    上下文字典信息：
+    - ``pwd``: 字节形式的密码，用于解密加密的 zip 文件
+
+    """
+    __slots__ = ('_namelist', '_namemapping')
+
+    def __init__(self, source: DataSource, *, pwd=None, **context):
+        super().__init__(source, pwd=pwd, **context)
+        self._namelist: list[bytes] | None = None
+        self._namemapping: dict[bytes, CDEntry] | None = None
+
+    def namelist(self) -> list[bytes]:
+        """
+        获取所有的文件名（bytes）列表
+        :return: 文件名列表
+        """
+        if self._namelist is None:
+            self._namelist = list(self.namemapping().keys())
+
+        return self._namelist  # type: ignore
+
+    def namemapping(self) -> dict[bytes, CDEntry]:
+        if self._namemapping is None:
+            if self.lowlevel_central_directory is None:
+                raise ValueError("Central directory is not fetched. Please call `init()` first")
+
+            self._namemapping = {
+                normpath(f.filename): f
+                for f in self.lowlevel_central_directory
+            }
+
+        return self._namemapping
+
+    def build_mapping(self):
+        if self.lowlevel_central_directory is None:
+            raise ValueError("Central directory is not fetched. Please call `init()` first")
+
+        self._namemapping = {
+            normpath(f.filename): f
+            for f in self.lowlevel_central_directory
+        }
+        self._namelist = list(self._namemapping.keys())
+
+    async def init(self):
+        await self.lowerlevel_fetch_eocd()
+        await self.lowerlevel_fetch_central_directory()
+        self.build_mapping()
+
     async def stream(self, filename: bytes, **kwargs):
         """
         流式读取一个压缩包内的文件
@@ -393,7 +418,7 @@ class RemoteZip:
         :param filename: 压缩包内的文件名
         :return:
         """
-        gen = await self._stream_single_file(normpath(filename), kwargs)
+        gen = await self._stream_single_file(self.entry(filename), kwargs)
         async for i in gen:
             yield i
 
@@ -412,36 +437,6 @@ class RemoteZip:
 
         return buffer
 
-
-    async def resolve(self, filename: bytes, max_resolve: float | int = 24, **kwargs) -> bytes:
-        """
-        解析一个文件的最终路径（基于 zip 的符号链接规范）
-
-        :param filename: 文件名
-        :param max_resolve: 最大可解析次数（你可以通过传入 ``float('inf')`` 来不限制解析次数，但不建议这样做
-        :param kwargs: 上下文信息
-        :raise ValueError: 当解析次数达到指定的上限时抛出
-        :return:
-        """
-        kwargs = self._merge_context(kwargs)
-        entry = self.find_file_entry(filename)
-        target = entry.filename
-
-        cnt = 0
-        while entry.is_symlink:
-            target = await self.read(filename, **kwargs)
-            try:
-                entry = self.find_file_entry(target)
-            except FileNotFoundError:
-                break
-
-            cnt += 1
-
-            if cnt >= max_resolve:
-                raise ValueError("Too many resolved files")
-
-        return target
-
     def listdir(self, path: bytes) -> list[bytes]:
         path = normpath(path).removesuffix(b'/') + b'/'
         return [
@@ -451,14 +446,13 @@ class RemoteZip:
         ]
 
     def exists(self, path: bytes) -> bool:
-        return normpath(path) in self.namelist()
+        return normpath(path) in self.namemapping()
 
     def entry(self, path: bytes) -> CDEntry:
-        i = self.namelist().index(normpath(path))
-        if i == -1:
-            raise FileNotFoundError()
-
-        return self.files[i]
+        try:
+            return self.namemapping()[normpath(path)]
+        except KeyError:
+            raise FileNotFoundError(path) from None
 
     def original_size(self, path: bytes) -> int:
         return self.entry(path).original_size
@@ -467,9 +461,7 @@ class RemoteZip:
         return self.entry(path).compressed_size
 
     async def header(self, path: bytes):
-        return await self.fetch_file_header(
-            filename=normpath(path)
-        )
+        return await self.lowerlevel_fetch_local_file_header(entry=self.entry(path))
 
     async def read_text(self, path: bytes, encoding='utf-8', errors='strict', **kwargs) -> str:
         return (await self.read(path, **kwargs)).decode(encoding, errors=errors)
@@ -480,9 +472,6 @@ class RemoteZip:
                 yield file
 
     def rglob_entries(self, pattern: bytes):
-        if self.files is None:
-            raise ValueError("No files. Please call `fetch_file_list` first.")
-
-        for file in self.files:
-            if fnmatch(file.filename, pattern):
-                yield file
+        for filename, cd in self.namemapping().items():
+            if fnmatch(filename, pattern):
+                yield cd

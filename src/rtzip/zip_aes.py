@@ -5,8 +5,10 @@ from typing import Protocol
 
 from obstruct import Struct, u16, u8
 
+from . import BadWinzipAESData, HMACError
 from .algorithm_register import algorithm_handler, is_algorithm_handlier_available, get_algorithm_handler
 from .errors import UnsupportedAlgorithmError, WrongPasswordError
+from .stream_io import StreamIO
 
 
 @dataclasses.dataclass(slots=True)
@@ -50,7 +52,7 @@ class AESDecryptor(Protocol):
     """
 
     @classmethod
-    def get_cipher(cls, enc_key: bytes) -> 'AESDecryptor':
+    def get_cipher(cls, enc_key: bytes, /) -> 'AESDecryptor':
         """
         创建并返回一个 AES-CTR 模式解密器实例。
 
@@ -72,7 +74,7 @@ class AESDecryptor(Protocol):
         """
         ...
 
-    def update(self, encrypted_data: bytes) -> bytes:
+    def update(self, encrypted_data: bytes, /) -> bytes:
         """
         解密一部分数据，返回解密后的明文数据。
 
@@ -92,7 +94,7 @@ class AESDecryptor(Protocol):
         """
         ...
 
-    def finalize(self) -> bytes:
+    def finalize(self, /) -> bytes:
         """
         完成解密过程，返回剩余的明文数据并清理资源。
 
@@ -141,17 +143,39 @@ def get_cipher(enc_key: bytes) -> AESDecryptor:
     return _decrypt_helpers['aes-cipher'].get_cipher(enc_key)
 
 
+class CipherWrapper:
+    def __init__(self, chipher: AESDecryptor, hmac_obj: hmac.HMAC):
+        self._c = chipher
+        self._h = hmac_obj
+
+    def __call__(self, data=None):
+        if data is not None:
+            self._h.update(data)
+            return self._c.update(data)
+        else:
+            return self._c.finalize()
+
+
+def get_decrypt_info(pwd, key_len, salt):
+    key_material = call_pbkdf2_hmac(pwd, 2 * key_len + 2, salt, 1000)
+    enc_key = key_material[:key_len]
+    hmac_key = key_material[key_len:key_len * 2]
+    checksum = key_material[-2:]
+
+    return enc_key, hmac_key, checksum
+
+
 # @algorithm_handler(0x0063)
 async def zip_aes_stream_decryptor(
-        raw_data,
+        io,
         compressed_size,
         aes_extra,
         raw_aes_extra, pwd
 ):
-    mac_length = 10
-
     # print(aes_extra)
     # print(raw_aes_extra, len(raw_aes_extra), aes_extra.__cstruct__.size)
+
+    mac_length = 10
 
     if aes_extra.vendor_version == 3:
         offset = aes_extra.__cstruct__.size
@@ -162,23 +186,22 @@ async def zip_aes_stream_decryptor(
     key_len = (0, 16, 24, 32)[aes_extra.strength]
     salt_len = (0, 8, 12, 16)[aes_extra.strength]
 
-    buf = bytearray()
-
     enc_header_len = salt_len + 2
 
-    while len(buf) < enc_header_len:
-        buf.extend(await anext(raw_data))
-
-    salt = buf[:salt_len]
-    quick_check = buf[salt_len: salt_len + 2]
-
     encrypted_data_len = compressed_size - enc_header_len - mac_length
+    if encrypted_data_len < 0:
+        raise BadWinzipAESData(
+            f'Invalid compressed_size: {compressed_size} '
+            f'(enc_header_len={enc_header_len}, mac_length={mac_length})'
+        )
+
+    enc_header = await io.read_exactly(enc_header_len)
+
+    salt = enc_header[:salt_len]
+    quick_check = enc_header[salt_len: salt_len + 2]
 
     # 获取派生密钥
-    key_material = call_pbkdf2_hmac(pwd, 2 * key_len + 2, bytes(salt), 1000)
-    enc_key = key_material[:key_len]
-    hmac_key = key_material[key_len:key_len * 2]
-    checksum = key_material[-2:]
+    enc_key, hmac_key, checksum = get_decrypt_info(pwd, key_len, bytes(salt))
 
     # print(f"Vendor Version: {aes_extra.vendor_version}")
     # print(f"Strenth: {aes_extra.strength}")
@@ -195,80 +218,55 @@ async def zip_aes_stream_decryptor(
     # 流式解密
     # 同时需要校验
 
-    cipher = get_cipher(enc_key)
-
+    c = get_cipher(enc_key)
     h = hmac.new(
         key=hmac_key,
         digestmod=hashlib.sha1
     )
 
-    size = len(buf) - enc_header_len
+    cipher = CipherWrapper(c, h)
 
-    _ = buf[enc_header_len:]
-    yield (x := cipher.update(_))  # 先把读取AES头产生的余量数据消耗掉
-    h.update(_)  # 更新校验值
-
-    # print("Data in Buffer", x)
-
+    size = 0
     buf = bytearray()
-
-    async for chunk in raw_data:  # 开始遍历真正的数据
+    stream = io.raw_stream()
+    async for chunk in stream:  # 开始遍历真正的数据
         size += len(chunk)  # 累计大小
 
-        if size > encrypted_data_len:  # 如果：发现已接收大小超了
-            # print("Overflow")
-            # 多出来的部分的大小就是 size - encrypted_data_len
-            # 相对的索引就是这个值取反
-            # 此后就是真实的 MAC 校验值了
+        if size <= encrypted_data_len:  # 目前接受的数据还不满
+            # 正常迭代、解密和更新校验值
+            yield cipher(chunk)
+        else:  # 发现已接收大小超过了期望接受的大小
             pos = -(size - encrypted_data_len)
 
-            yield cipher.update(chunk[:pos])
-            h.update(chunk[:pos])
-
-            buf.extend(chunk[pos:])  # 把剩余数据放进 buffer
-            # 某些极端情况下可能会产生数据差几个字节的问题
+            yield cipher(chunk[:pos])
+            buf.extend(chunk[pos:])
+            # 把剩余数据放进 buffer
+            # 某些极端情况下可能会产生紧跟其后的 MAC 差几个字节的问题
             # 我们需要在后面把数据补上
             break
 
-        # 否则：正常迭代、解密和更新校验值
-        yield cipher.update(chunk)
-        h.update(chunk)
+    await stream.aclose()
 
-        # print("Get chunk {}/{}".format(size, encrypted_data_len))
-
-    x = cipher.finalize()
-    if x:
+    if x := cipher(None):
         yield x
 
-    # 该读取 MAC 了
-
-    while len(buf) < mac_length:
-        buf.extend(await anext(raw_data))
-
-    # 现在肯定够了
-
-    if len(buf) != mac_length:
-        raise ValueError("Unexpected extra data")
+    # 补齐 MAC 数据
+    if len(buf) < mac_length:
+        buf.extend(await io.read_exactly(mac_length - len(buf)))
 
     # print(f"Elpasted Size: {len(buf)}")
-    mac = buf[:mac_length]
 
-    digest = h.digest()[:10]
-    if not hmac.compare_digest(digest, mac):
-        # print(digest, mac, h.digest())
-        raise ValueError("Wrong HMAC")
+    digest = h.digest()[:mac_length]
+    if not hmac.compare_digest(digest, buf):
+        raise HMACError('HMAC mismatch')
 
-    try:
-        await anext(raw_data)
-        raise ValueError("Unexpect extra data")
-
-    except StopAsyncIteration:
-        # print("Stop")
-        return
+    if await io.read(1):
+        raise BadWinzipAESData("Extra data at end of the stream.")
 
 
 def zip_aes_wrapper(raw_data, entry, header, ctx):
     assert ctx.get('pwd')
+
     assert _decrypt_helpers.get(
         'aes-cipher'
     ), "You didn't register a AESCipher type, please register it by `aes_cipher_implement` decorator first"
@@ -286,7 +284,7 @@ def zip_aes_wrapper(raw_data, entry, header, ctx):
         raise UnsupportedAlgorithmError(algorithm)
 
     return get_algorithm_handler(algorithm)(
-        zip_aes_stream_decryptor(raw_data, entry.compressed_size, aes_extra, raw_aes_extra, ctx.get('pwd')),
+        zip_aes_stream_decryptor(StreamIO(raw_data), entry.compressed_size, aes_extra, raw_aes_extra, ctx.get('pwd')),
         entry, header, ctx
     )
 
