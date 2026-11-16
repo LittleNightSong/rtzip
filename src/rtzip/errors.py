@@ -1,27 +1,50 @@
-class UnsupportedAlgorithmError(Exception):
+class RtZipError(Exception):
     ...
 
 
-class UnsupportedCryptoError(Exception):
+class UnsupportedAlgorithmError(RtZipError):
     ...
 
 
-class UnsupportedDataDescriptorError(Exception):
+class WrongPasswordError(RtZipError):
     ...
 
 
-class WrongPasswordError(Exception):
+class BadZipError(RtZipError):
     ...
 
 
-class BadZipError(Exception):
+class WinzipAESError(RtZipError):
     ...
 
 
-class BadWinzipAESData(BadZipError):
+class BadWinzipAESData(WinzipAESError):
     ...
 
 
-class HMACError(Exception):
+class HMACError(WinzipAESError):
     ...
 
+
+class NotEnoughDataError(BadZipError):
+    def __init__(self, require, available):
+        super().__init__(require, available)
+        self.require = require
+        self.available = available
+
+    def __str__(self):
+        return f"require {self.require} byte(s) but only {self.available} available"
+
+
+class InvalidOffsetError(BadZipError):
+    def __init__(self, start, length, available):
+        super().__init__(start, length, available)
+        self.start = start
+        self.length = length
+        self.available = available
+
+    def __str__(self):
+        return (
+            f"invalid offset {self.start} + {self.length} "
+            f"(available: {self.available})"
+        )

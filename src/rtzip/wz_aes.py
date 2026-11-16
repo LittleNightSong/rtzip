@@ -1,23 +1,44 @@
 import dataclasses
 import hashlib
 import hmac
-from typing import Protocol
-
-from obstruct import Struct, u16, u8
+import struct
+from typing import Protocol, Annotated
 
 from . import BadWinzipAESData, HMACError
-from .algorithm_register import algorithm_handler, is_algorithm_handlier_available, get_algorithm_handler
+from .algorithm_register import algorithm_handler, is_algorithm_handler_available, get_algorithm_handler
 from .errors import UnsupportedAlgorithmError, WrongPasswordError
 from .stream_io import StreamIO
 
 
+AES_KEY_LEN_MAP = (None, 16, 24, 32)
+AES_SALT_LEN_MAP = (None, 8, 12, 16)
+
+
 @dataclasses.dataclass(slots=True)
-class AESExtraData(Struct):
-    vendor_version: u16
-    vendor_id: u16  # 2 = AE-1, 3 = AE-2
-    strength: u8  # 1=128bits, 2=192bits, 3=256bits
-    compression: u16
-    # mac_length: u16  # only available on AE-2
+class AESExtraData:
+    __STRUCT__ = struct.Struct("<HHBH")
+
+    vendor_version: int
+    vendor_id: int  # 2 = AE-1, 3 = AE-2
+    strength: int  # 1=128bits, 2=192bits, 3=256bits
+    compression: int
+    mac_length: int = 10  # only available on AE-2
+
+    @property
+    def key_length(self) -> int:
+        return AES_KEY_LEN_MAP[self.strength]
+
+    @property
+    def salt_length(self) -> int:
+        return AES_SALT_LEN_MAP[self.strength]
+
+    @property
+    def lengths_key_salt(self) -> tuple[int, int]:
+        return self.key_length, self.salt_length
+
+    @classmethod
+    def unpack(cls, data):
+        return cls(*cls.__STRUCT__.unpack(data))
 
 
 # 这些方法要求用户在初始化的时候设置，否则无法解密
@@ -144,7 +165,7 @@ def get_cipher(enc_key: bytes) -> AESDecryptor:
 
 
 class CipherWrapper:
-    def __init__(self, chipher: AESDecryptor, hmac_obj: hmac.HMAC):
+    def __init__(self, chipher: AESDecryptor, hmac_obj: hmac.HMAC, /):
         self._c = chipher
         self._h = hmac_obj
 
@@ -156,7 +177,7 @@ class CipherWrapper:
             return self._c.finalize()
 
 
-def get_decrypt_info(pwd, key_len, salt):
+def get_decrypt_info(pwd, key_len, salt, /):
     key_material = call_pbkdf2_hmac(pwd, 2 * key_len + 2, salt, 1000)
     enc_key = key_material[:key_len]
     hmac_key = key_material[key_len:key_len * 2]
@@ -170,7 +191,7 @@ async def zip_aes_stream_decryptor(
         io,
         compressed_size,
         aes_extra,
-        raw_aes_extra, pwd
+        raw_aes_extra, pwd, /
 ):
     # print(aes_extra)
     # print(raw_aes_extra, len(raw_aes_extra), aes_extra.__cstruct__.size)
@@ -183,8 +204,9 @@ async def zip_aes_stream_decryptor(
             raw_aes_extra[offset:offset + 2], 'little'
         )
 
-    key_len = (0, 16, 24, 32)[aes_extra.strength]
-    salt_len = (0, 8, 12, 16)[aes_extra.strength]
+    aes_extra.mac_length = mac_length
+
+    key_len, salt_len = aes_extra.lengths_key_salt
 
     enc_header_len = salt_len + 2
 
@@ -236,7 +258,7 @@ async def zip_aes_stream_decryptor(
             # 正常迭代、解密和更新校验值
             yield cipher(chunk)
         else:  # 发现已接收大小超过了期望接受的大小
-            pos = -(size - encrypted_data_len)
+            pos = encrypted_data_len - size
 
             yield cipher(chunk[:pos])
             buf.extend(chunk[pos:])
@@ -247,32 +269,37 @@ async def zip_aes_stream_decryptor(
 
     await stream.aclose()
 
-    if x := cipher(None):
+    if x := cipher():  # 调用 finalize
         yield x
 
     # 补齐 MAC 数据
     if len(buf) < mac_length:
-        buf.extend(await io.read_exactly(mac_length - len(buf)))
+        buf.extend(await io.read_exactly(mac_length - len(buf)))  # 只读取必要的几字节，不能相信数据一定只剩下这些字节没有读了
 
     # print(f"Elpasted Size: {len(buf)}")
 
-    digest = h.digest()[:mac_length]
-    if not hmac.compare_digest(digest, buf):
+    digest = h.digest()[:mac_length]  # 提取数据的 HMAC 校验值
+    if not hmac.compare_digest(digest, buf):  # 比较
         raise HMACError('HMAC mismatch')
 
     if await io.read(1):
         raise BadWinzipAESData("Extra data at end of the stream.")
 
 
-def zip_aes_wrapper(raw_data, entry, header, ctx):
-    assert ctx.get('pwd')
+def _assert(conn, error_msg):
+    if not conn:
+        raise ValueError(error_msg)
 
-    assert _decrypt_helpers.get(
+def zip_aes_wrapper(raw_data, entry, header, ctx, /):
+    if ctx.pwd is None:
+        raise WrongPasswordError(None)
+
+    _assert(_decrypt_helpers.get(
         'aes-cipher'
-    ), "You didn't register a AESCipher type, please register it by `aes_cipher_implement` decorator first"
-    assert _decrypt_helpers.get(
+    ), "You didn't register a AESCipher type, please register it by `aes_cipher_implement` decorator first")
+    _assert(_decrypt_helpers.get(
         'pbkdf2-hmac'
-    ), "You didn't register a PBKDF2-HMAC function, please register it by `pbkdf2_hmac_implement` decorator first"
+    ), "You didn't register a PBKDF2-HMAC function, please register it by `pbkdf2_hmac_implement` decorator first")
 
     raw_aes_extra = header.extra_fields[0x9901]
     aes_extra = AESExtraData.unpack(raw_aes_extra)
@@ -280,16 +307,24 @@ def zip_aes_wrapper(raw_data, entry, header, ctx):
     # 获取解密后的压缩格式
     algorithm = aes_extra.compression
 
-    if not is_algorithm_handlier_available(algorithm):
+    if not is_algorithm_handler_available(algorithm):
         raise UnsupportedAlgorithmError(algorithm)
 
     return get_algorithm_handler(algorithm)(
-        zip_aes_stream_decryptor(StreamIO(raw_data), entry.compressed_size, aes_extra, raw_aes_extra, ctx.get('pwd')),
+        zip_aes_stream_decryptor(StreamIO(raw_data), entry.compressed_size, aes_extra, raw_aes_extra, ctx.pwd),
         entry, header, ctx
     )
 
 
-def install(pbkdf2_hmac: PBKDF2_HMAC_FunctionType | None = None, aes_cipher: type[AESDecryptor] | None = None):
+def install(
+        pbkdf2_hmac: PBKDF2_HMAC_FunctionType | None = None,
+        aes_cipher: type[AESDecryptor] | None = None, /,
+        override: bool = False
+):
     pbkdf2_hmac_implement(pbkdf2_hmac) if pbkdf2_hmac else None
     aes_cipher_implement(aes_cipher) if aes_cipher else None
-    algorithm_handler(0x0063)(zip_aes_wrapper) if not is_algorithm_handlier_available(0x0063) else None
+    # algorithm_handler(0x0063)(zip_aes_wrapper) if not is_algorithm_handlier_available(0x0063) else None
+
+    if not is_algorithm_handler_available(0x63) or override:
+        algorithm_handler(0x63, override=True)(zip_aes_wrapper)
+

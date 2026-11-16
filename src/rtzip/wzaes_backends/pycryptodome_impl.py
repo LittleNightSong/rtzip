@@ -42,6 +42,6 @@ class PyCryptodomeAESCipher:
         return b''
 
 
-def install():
-    from rtzip.zip_aes import install
-    install(pbkdf2_hmac_pycryptodome, PyCryptodomeAESCipher)
+def install(override: bool = False):
+    from rtzip.wz_aes import install
+    install(pbkdf2_hmac_pycryptodome, PyCryptodomeAESCipher, override=override)

@@ -6,16 +6,31 @@ requires = [
 
 [project]
 name = "rtzip"
-version = "0.6.0"
+version = "0.7.5"
 requires-python = ">=3.12"
-dependencies = [
-    "obstruct==0.5.2",
-    "pyaes>=1.6.1",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
+    "colorama>=0.4.6",
     "cryptography>=50.0.1",
     "niquests>=3.21.0",
     "pycryptodome>=3.23.0",
+    "pyrefly>=1.4.1",
+    "pyzipper>=0.4.0",
+    "rich>=15.0.0",
+    "tgcrypto-c-lectr==1.3.2",
 ]
+
+tgcrypto-c-lectr = [
+    "tgcrypto-c-lectr==1.3.2"
+]
+
+pycryptodome = [
+    "pycryptodome>=3.23.0"
+]
+
+[[tool.uv.index]]
+name = 'aliyun'
+#default = true
+url = "https://mirrors.aliyun.com/pypi/simple"

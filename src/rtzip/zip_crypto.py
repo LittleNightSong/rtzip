@@ -1,6 +1,8 @@
+from .errors import WrongPasswordError
 from typing import AsyncGenerator, Any
 
 from .models import CDEntry, LocalFileHeader
+from .context import Context
 
 _crc_table = None
 
@@ -60,9 +62,13 @@ async def zipcrypto_wrapper(
         raw_data: AsyncGenerator[bytes | bytearray | memoryview, None],
         entry: CDEntry,
         header: LocalFileHeader,
-        ctx: dict[str , Any]
+        ctx: Context
 ) -> AsyncGenerator[bytes, None]:
-    pwd = bytes(ctx['pwd'])
+
+    if ctx.pwd is None:
+        raise WrongPasswordError(ctx.pwd)
+
+    pwd = bytes(ctx.pwd)
 
     buffer = bytearray()
 

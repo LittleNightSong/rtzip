@@ -1,10 +1,12 @@
 import sys
 
+from . import BadZipError
 from .algorithm_register import algorithm_handler
+from .stream_io import StreamIO
 
 
 @algorithm_handler(0x0008)
-async def deflate_wrapper(gen, entry, header, ext):
+async def deflate_wrapper(gen, entry, header, ctx):
     import zlib
     decompresser = zlib.decompressobj(-15)  # 禁用 zlib 头部
     async for chunk in gen:
@@ -15,17 +17,50 @@ async def deflate_wrapper(gen, entry, header, ext):
 
 
 @algorithm_handler(0x0000)
-async def raw_wrapper(gen, entry, header, ext):
-    async for chunk in gen:
-        yield chunk
+def raw_wrapper(gen, entry, header, ctx):
+    return gen
 
 
 @algorithm_handler(0x000E)
-async def lzma_wrapper(gen, entry, header, ext):
+async def lzma_wrapper(gen, entry, header, ctx):
     import lzma
-    decompressor = lzma.LZMADecompressor()
 
-    async for chunk in gen:
+    stream = StreamIO(gen)
+
+    lzma_header = memoryview(await stream.read_exactly(4)).cast('b')
+
+    # useless fields
+    # major: int = lzma_header[0]
+    # minor: int = lzma_header[1]
+
+    properties_size = int.from_bytes(lzma_header[2:4], 'little')
+
+    if properties_size != 5:
+        raise BadZipError(f'Wrong LZMA properties size (expected 5, but {properties_size} found)')
+
+    properties = memoryview(await stream.read_exactly(properties_size))
+
+    byte = properties[0]
+
+    lc = byte % 9
+    lp = (byte // 9) % 5
+    pb = byte // 45
+
+    dict_size = int.from_bytes(properties[1:5], byteorder='little')
+
+    filters = [
+        {
+            "id": lzma.FILTER_LZMA1,
+            "dict_size": dict_size,
+            "lc": lc,
+            "lp": lp,
+            "pb": pb,
+        }
+    ]
+
+    decompressor = lzma.LZMADecompressor(lzma.FORMAT_RAW, None, filters=filters)
+
+    async for chunk in stream.raw_stream():
         data = decompressor.decompress(chunk)
         if data:
             yield data
@@ -40,8 +75,9 @@ async def lzma_wrapper(gen, entry, header, ext):
             f' – possibly concatenated streams or extra metadata'
         )
 
+
 @algorithm_handler(0x000C)
-async def bz2_wrapper(gen, entry, header, ext):
+async def bz2_wrapper(gen, entry, header, ctx):
     import bz2
     decompressor = bz2.BZ2Decompressor()
 
@@ -66,7 +102,7 @@ async def bz2_wrapper(gen, entry, header, ext):
 
 if sys.version_info >= (3, 14):
     @algorithm_handler(0x000D)
-    async def zstd_wrapper(gen, entry, header, ext):  # Not Tested
+    async def zstd_wrapper(gen, entry, header, ctx):  # Not Tested
         import warnings
         warnings.warn("ZStandard support is experimental and has not been tested")
 

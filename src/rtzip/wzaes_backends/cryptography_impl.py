@@ -72,5 +72,5 @@ def install():
         stacklevel=2
     )
 
-    from rtzip.zip_aes import install
+    from rtzip.wz_aes import install
     install(pbkdf2_hmac_impl, CryptographyAESCipher)

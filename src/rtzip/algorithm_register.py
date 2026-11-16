@@ -2,6 +2,7 @@ from typing import AsyncGenerator, Any, Protocol, runtime_checkable
 
 from .errors import UnsupportedAlgorithmError
 from .models import CDEntry, LocalFileHeader
+from .context import Context
 
 type IndexAcceptedTypes = bytes | bytearray | memoryview
 
@@ -13,7 +14,7 @@ class AlgorithmHandler(Protocol):
             raw_data: AsyncGenerator[IndexAcceptedTypes, None],
             entry: CDEntry,
             header: LocalFileHeader,
-            context: dict[str, Any],
+            context: Context,
             /
     ) -> AsyncGenerator[IndexAcceptedTypes, None]:
         """
@@ -65,7 +66,7 @@ def get_algorithm_handler(algorithm: int) -> AlgorithmHandler:
 def get_algorithm_handler_safe(algorithm: int) -> AlgorithmHandler | None:
     return algorithm_mapping.get(algorithm)
 
-def is_algorithm_handlier_available(algorithm: int) -> bool:
+def is_algorithm_handler_available(algorithm: int) -> bool:
     """
     判断某个压缩算法是否已有注册的包装器
 

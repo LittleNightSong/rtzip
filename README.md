@@ -1,11 +1,13 @@
+from rtzip import RemoteZipfrom rtzip import RemoteZipfrom rtzip import RemoteZip
+
 # Rtzip
 
 _一个以最小的数据量提取远程 zip 文件内容的库_
 
 ## 特点
 
-- 不与任何 HTTP 库耦合
-- 依赖简单（只有用于解析二进制结构的 `obstruct`）
+- 不与任何远程数据源耦合
+- 依赖简单（只有用于解析二进制结构的 `obstruct`）、纯 Python
 - 兼容标准 zip 格式、ZIP64 扩展
 
 ## 安装
@@ -20,11 +22,13 @@ pip install rtzip
 
 你需要先定义一个自己的数据源，再将其传递给 `RemoteZip`。
 
-数据源需要包含三个方法：
+数据源需要包含五个方法：
 
 - `read_range(offset, length) -> bytes | bytearray | memoryview`: 随机读取某个数据段
 - `read_range_stream(offset, length) -> AsyncGenerator[bytes | bytearray | memoryview, None]`: 流式随机读取某个数据段
 - `get_total_size() -> int`: 获取源的总大小（用于 Zip-EOCD 查找）
+- `setup() -> None`: 初始化数据源
+- `close() -> None`: 关闭数据源
 
 ```python
 from rtzip import RemoteZip, DataSource
@@ -47,6 +51,7 @@ class HTTPSource(DataSource):
         if resp.status_code != 206:
             await resp.close()
             raise niquests.HTTPError(response=resp)
+        # 实际使用的时候，必须校验服务器的相应长度和我们期望的长度一致，否则 rtzip 将无法正常解析
         return resp
 
     async def read_range(self, offset, length):
@@ -60,86 +65,26 @@ class HTTPSource(DataSource):
         resp = await self.session.head(self.url)
         resp.raise_for_status()
         return int(resp['content-length'])
+    
+    async def close(self):
+        await self.session.close()
 
 ```
+
+> [!WARNING]
+> rtzip 的逻辑代码默认数据源是可信的，不会对数据源返回的数据长度做任何校验。编写数据源时请务必保证返回的数据大小等于请求的大小
+> 建议检查行为越早越好
 
 ### 创建实例
 
 ```python
-rz = RemoteZip(HTTPSource(url=..., session=...), pwd=b'<password-or-None>')
+rz = RemoteZip(HTTPSource(url=..., session=...)))
 ```
-
-> [!NOTE]
-> `pwd` 为仅关键字参数，用于为加密 zip 文件提供解密密码；不使用加密时可以不传。
 
 `rtzip` 在实现上分为两层：
 
-- **Low-level**：`LowLevelRemoteZip`，提供 `lowerlevel_*` 前缀的底层方法，全部为异步，直接操作原始路径，不自动做路径规范化，也不自动维护规范化映射表。
-- **High-level**：`RemoteZip`（继承自 `LowLevelRemoteZip`），提供以规范化路径为核心的便捷接口，同时保留了全部 Low-level 方法。
-
----
-
-### Low-level API
-
-Low-level API 适合需要精细控制元数据拉取时机、或者希望复用底层缓存的场景。
-所有 `lowerlevel_*` 方法默认都会缓存结果（`reuse=True`），可通过传入 `reuse=False` 强制重新拉取并覆盖缓存。
-
-#### 拉取 EOCD
-
-```python
-# 显式拉取 EOCD 信息
-# 返回一个 `rtzip.models.EOCD` 或 `rtzip.models.Zip64EOCD` 对象
-eocd = await rz.lowerlevel_fetch_eocd()
-```
-
-支持的参数：
-
-- `reuse=True`：命中缓存则直接返回
-- `initial_chunk=4096`：初始扫描的字节数
-- `max_cnt=-1`：最大重试次数（`-1` 表示不限）
-- `loss_factor=2`：每次重试后扫描区间的放大系数
-
-#### 拉取中央目录
-
-```python
-# 拉取中央目录的信息（文件列表）
-files = await rz.lowerlevel_fetch_central_directory()
-# 返回一个包含 `rtzip.models.CDEntry` 对象的列表
-# 如果还未拉取 EOCD，则将自动拉取 EOCD
-```
-
-支持的参数：
-
-- `ignore_extra=False`：是否忽略尾部无法解析的多余数据
-- `reuse=True`：命中缓存则直接返回
-
-#### 拉取本地文件头
-
-```python
-# 获取本地文件头信息
-# 返回一个二元组 `(header, buffer)`
-# - header 是 `rtzip.models.LocalFileHeader` 对象
-# - buffer 是解析头部时顺带读取到的额外数据（当文件足够小时可直接复用）
-header, extra = await rz.lowerlevel_fetch_local_file_header(filename=...)
-
-# 你也可以通过 `rtzip.models.CDEntry` 对象拉取本地文件头，这样可以跳过文件名查找
-header, extra = await rz.lowerlevel_fetch_local_file_header(entry=...)
-```
-
-#### 构建映射与查找
-
-```python
-# 构建「原始文件名 -> CDEntry」映射表（覆盖已有映射）
-mapping = rz.lowlevel_build_mapping()
-
-# 通过原始路径精确查找 CDEntry
-# 如果已存在 lowlevel_file_mapping，则直接命中；否则线性遍历中央目录
-entry = rz.lowerlevel_find_file_entry(b'<filename>')
-```
-
-> [!NOTE]
-> `lowerlevel_find_file_entry` 要求中央目录已被拉取，否则抛出 `ValueError`；
-> 找不到文件时抛出 `FileNotFoundError`。
+- **Low-level**：`LowLevelRemoteZip`，提供读取远程 zip 文件的底层方法，全部为异步，直接操作原始路径，不自动做路径规范化，也不自动维护规范化映射表。
+- **High-level**：`RemoteZip`，提供以规范化路径为核心的便捷接口，同时通过 `lowlevel` 属性暴露了底层 `LowLevelRemoteZip` 对象。
 
 ---
 
@@ -154,6 +99,9 @@ High-level API 以规范化路径（[normpath](src/rtzip/path_methods.py)）为�
 # 一次性拉取 EOCD、中央目录并建立文件名 -> CDEntry 映射
 await rz.init()
 
+# 或者在创建实例时使用 `.open(src, ctx)` 类方法，它会自动执行初始化
+rz = RemoteZip.open(HTTPSource(url=..., session=...))
+
 # 获取所有的文件名（bytes）列表
 names: list[bytes] = rz.namelist()
 
@@ -162,17 +110,25 @@ mapping = rz.namemapping()
 
 # 手动重建映射表（在中央目录变更后调用）
 rz.build_mapping()
+
 ```
 
 > [!TIP]
-> 大多数 `RemoteZip` 的元数据操作（`entry`、`exists`、`listdir` 等）都依赖 `namemapping()`，
-> 在 `init()`（或 `build_mapping()`）之后它们可以直接同步调用。
+> 大多数 `RemoteZip` 的元数据操作（`entry`、`exists`、`listdir` 等）都要求实例已初始化完毕，
+> 或者手动调用过了 `.lowlevel.fetch_central_directory()` 方法
+> 一般来说，通过 `.open(src, ctx)` 和调用了 `.init()` 方法的 RemoteZip 实例都可以直接执行元数据查询
 
 #### 元数据查询
 
 ```python
+
 # 通过规范化路径查找 CDEntry
-entry = rz.entry(b'<filename>')
+entry = rz.entry(b'data/file')
+
+# 以下写法是等价的，重复的斜杠和位于开头的斜杠会在规范化路径时自动消除
+# entry = rz.entry(b'/data/file')
+# entry = rz.entry(b'//data/file')
+# entry = rz.entry(b'/data//file')
 
 # 文件存在性
 if rz.exists(b'<filename>'):
@@ -183,29 +139,48 @@ else:
 # 获取指定目录下的子项（基于文件名前缀且不包含目录本身）
 files: list[bytes] = rz.listdir(b'<filename>')
 
-# 模式匹配
-files = rz.rglob(b"*.py")
+# 获取指定目录下子项的 CDEntry 对象
+file_entries: list[CDEntry] = rz.listdir_entries(b'<filename>')
 
-entries = rz.rglob_entries(b"*.py")
+# 模式匹配
+for i in rz.rglob(b"*.py"):
+    ...
+
+for entry in rz.rglob_entries(b"*.py"):
+    ...
 
 # 大小获取
 original_size = rz.original_size(b'<filename>')
 compressed_size = rz.compressed_size(b'<filename>')
 
-# 拉取本地文件头（返回 (header, buffer) 二元组）
-header, extra = await rz.header(b'<filename>')
-```
+# 拉取本地文件头
+header = await rz.header(b'<filename>')
 
-> [!NOTE]
-> 与 `lowerlevel_find_file_entry`（使用原始路径、精确匹配）不同，
-> `entry` 会对传入路径做规范化处理，更贴近直觉，但不会复用 `lowlevel_file_mapping`，
-> 因而在某些场景下可能有轻微的性能损失。
+# 获取文件的本地文件头起始偏移量
+header_offset = rz.header_offset(b'<filename>')
+
+# 获取文件内容的起始偏移量
+start, length = rz.content_range(b'<filename>')
+
+# 同时获取文件内容偏移量和压缩算标识
+start, length, algorithm = rz.range_and_algorithm(b'<filename>')
+
+# 同时获取文件内容偏移量和数据流处理器
+start, length, handler = rz.range_and_handler(b'<filename>')
+# 这个处理器只接受一个异步数据流生成器，返回一个异步数据流生成器，生成处理和解压后的数据
+# Handler 在调用期间会自动拉取 Local File Header
+
+```
 
 #### 文件读取
 
 ```python
+
+# 直接将一个文件的解压后原始数据加载进内存
 data: bytearray = await rz.read(b'<filename>')
 
+
+# 流式读取和解压文件
 async for chunk in rz.stream(b'<filename>'):
     print(chunk)
 
@@ -213,22 +188,59 @@ async for chunk in rz.stream(b'<filename>'):
 text = await rz.read_text(b'<filename>', encoding='utf-8', errors='strict')
 ```
 
+
+#### 上下文信息
+
+rtzip 的上下文对象允许控制：
+
+##### General
+
+- `pwd`: 在需要解密文件时提供的密码
+
+##### EOCD Scan
+
+- `eocd_scan_initial_chunk_size`: 扫描 EOCD 时初始的块大小
+- `eocd_scan_max_retry`: 最大重新拉取数据块次数
+- `eocd_scan_rechunk_factor`: 在重新拉取数据块时新的块大小系数
+- `eocd_scan_use_cache`: 是否允许复用缓存在实例中的 EOCD 信息
+
+##### Extra
+
+当你为 `Context` 对象赋值新的属性的时候，配置会被放入 `.extras` 字典中
+当你访问一个 `Context` 不存在的属性的时候，会尝试先在 `.extras` 中查找，再抛出错误
+
+> [!NOTE]
+> 上下文对象的配置能力将会随着新版本的发布而继续拓展
+
+##### 上下文的合并
+
+你可以将通过 `|` 运算符合并两个 `Context` 对象，这样会产生一个新对象
+
+你也可以通过 `Context | dict` 的运算将上下文和字典配置合并，
+字典中在 `Context` 中声明的部分会合并到属性中，额外的部分会合并到 `.extras` 字典中
+
+
 > [!TIP]
 > 更具体的文档参见方法和类的文档注释
+
+---
+
+### Low-Level API
+
+待补充
 
 ---
 
 ### 自定义压缩算法支持
 
 ```python
-# 示例：扩展 PPMd 算法支持（需要 pip install ppmd）
+# 示例：扩展 PPMd 算法支持（基于 ppmd 库）
 import ppmd
 from rtzip import algorithm_handler
 
 
 @algorithm_handler(0x000A)
 async def ppmd_wrapper(raw_generator, entry, header, ctx):
-    # PPMd 流式解压（API 取决于具体库）
     decomp = ppmd.Ppmd7Decompressor()
     async for chunk in raw_generator:
         yield decomp.decompress(chunk)
@@ -245,14 +257,13 @@ async def your_deflate_wrapper(raw_generator, entry, header, ctx):
 # raw generator 是一个异步生成器，每次迭代产生一个 bytes/bytearray/memoryview 对象
 # entry 是这个文件的 CDEntry 对象
 # header 是这个文件的 LocalFileHeader 对象
-# ctx 是一个字典，一般为调用 read 或其它方法的 kwargs
+# context 是调用 `read` 等方法时传入的 context 与 `RemoteZip` 实例级上下文的合并结果
 
 ```
 
 ### 启用加密文件支持
 
-启用很简单，rtzip 提供了两种不同的加密后端实现：`pycryptodome` 以及 `cryptography`。
-但是我们更建议使用 `pycryptodome`，因为 cryptography 的某些局限性，项目不得不在性能上做出妥协。
+rtzip 提供了基于`cryptography`的加密支持。
 
 #### pycryptodome
 
@@ -261,6 +272,8 @@ from rtzip.wzaes_backends import pycryptodome_impl
 
 pycryptodome_impl.install()
 ```
+
+rtzip 还有一个基于 `cryptography` 的加密支持，但由于其硬性约束，使用对性能影响极大
 
 #### cryptography (已弃用)
 
@@ -324,7 +337,7 @@ class PyCryptodomeAESCipher:
 
 
 def install():
-    from rtzip.zip_aes import install
+    from rtzip.wz_aes import install
     install(pbkdf2_hmac_pycryptodome, PyCryptodomeAESCipher)
 
 ```
@@ -343,7 +356,7 @@ def install():
 这两个函数都位于 `rtzip.zip_aes` 下。
 
 ```python
-from rtzip.zip_aes import pbkdf2_hmac_implement, aes_cipher_implement
+from rtzip.wz_aes import pbkdf2_hmac_implement, aes_cipher_implement
 
 
 @pbkdf2_hmac_implement
