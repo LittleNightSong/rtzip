@@ -1,6 +1,5 @@
 import asyncio
 import itertools
-import os
 import re
 from pathlib import Path
 from typing import AsyncGenerator
@@ -8,14 +7,12 @@ from typing import AsyncGenerator
 import colorama.ansi
 import pyzipper
 from niquests import AsyncSession
-
 from rich import print
 
-from rtzip import RemoteZip
+from rtzip import RemoteZip, DataSource
 from rtzip.builtin_sources import LocalFileSourceSync
 from rtzip.context import Context
-from rtzip.remotezip import DataSource
-from rtzip.wzaes_backends import tgcrypto_c_lectr_impl, pycryptodome_impl
+from rtzip.wzaes_backends import tgcrypto_c_lectr_impl
 
 
 class URLSource(DataSource):
@@ -101,14 +98,21 @@ def compare_bytes(data, fact):
     if not result:
         show_diff(data, fact)
 
+    return result
 
-def comparing_pyzipper(filename, inner, outter, pwd=None):
+
+async def compare_file(rz: RemoteZip, arcname: bytes, filename: Path):
+    arc = await rz.read(arcname)
+    return compare_bytes(arc, filename.read_bytes())
+
+
+def comparing_pyzipper(achieve, arcname, realfile, pwd=None):
     print("PyZipper")
-    with pyzipper.AESZipFile(filename, 'r') as zipper:
+    with pyzipper.AESZipFile(achieve, 'r') as zipper:
         zipper.pwd = pwd
 
-        data = zipper.read(inner)
-        original = Path(outter).read_bytes()
+        data = zipper.read(arcname)
+        original = Path(realfile).read_bytes()
 
         compare_bytes(data, original)
 
@@ -122,20 +126,20 @@ async def main():
     root = Path(__file__).parent.parent
     samples = root / 'samples'
 
-    filename = samples / 'random-zip-aes-lzma.zip'
+    zipfile = samples / 'random-zip-aes-lzma.zip'
 
-    source = LocalFileSourceSync(filename)
+    source = LocalFileSourceSync(zipfile)
     rz = await RemoteZip.open(source, Context(pwd=pwd))
 
     file = b"/random.bin"
     original_file = samples / 'random.bin'
 
-    comparing_pyzipper(filename, file.decode()[1:], original_file, pwd)
+    comparing_pyzipper(zipfile, file.decode()[1:], original_file, pwd)
 
-    uncompressed_data = await rz.read(file)
-    original_data = Path(original_file).read_bytes()
+    await compare_file(rz, file, original_file)
 
-    compare_bytes(uncompressed_data, original_data)
+    # print(rz.info(file)._entry.last_modified_time)
+    # print(rz.info(file)._entry.last_modified_date)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 from .errors import WrongPasswordError
 from typing import AsyncGenerator, Any
 
-from .models import CDEntry, LocalFileHeader
+from .structs import CDEntry, LocalFileHeader
 from .context import Context
 
 _crc_table = None
@@ -61,7 +61,7 @@ def decrypt_byte(k2: int) -> int:
 async def zipcrypto_wrapper(
         raw_data: AsyncGenerator[bytes | bytearray | memoryview, None],
         entry: CDEntry,
-        header: LocalFileHeader,
+        header: LocalFileHeader | None,
         ctx: Context
 ) -> AsyncGenerator[bytes, None]:
 

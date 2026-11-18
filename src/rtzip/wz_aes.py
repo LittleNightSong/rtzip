@@ -311,7 +311,7 @@ def zip_aes_wrapper(raw_data, entry, header, ctx, /):
         raise UnsupportedAlgorithmError(algorithm)
 
     return get_algorithm_handler(algorithm)(
-        zip_aes_stream_decryptor(StreamIO(raw_data), entry.compressed_size, aes_extra, raw_aes_extra, ctx.pwd),
+        zip_aes_stream_decryptor(StreamIO(raw_data), entry.compress_size, aes_extra, raw_aes_extra, ctx.pwd),
         entry, header, ctx
     )
 

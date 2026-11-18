@@ -1,31 +1,8 @@
-import asyncio
-import time
 import unittest
 from rtzip import RemoteZip, builtin_sources
+import unittest
 
-
-def run(func):
-    asyncio.run(func())
-    return func
-
-
-@run
-async def test():
-    src = builtin_sources.LocalFileSourceSync('../samples/zip64_too_many_files.zip')
-    rz = RemoteZip(src)
-    eocd = await rz.lowlevel.fetch_eocd()
-
-    print(eocd)
-
-    st = time.perf_counter()
-
-    async for i in rz.lowlevel.iter_fetch_central_directory():
-        print(i.filename)
-
-    et = time.perf_counter()
-
-    elapsed = et - st
-    print(elapsed)
+from rtzip import RemoteZip, builtin_sources
 
 
 class Zip64Test(unittest.IsolatedAsyncioTestCase):
@@ -33,12 +10,14 @@ class Zip64Test(unittest.IsolatedAsyncioTestCase):
         src = builtin_sources.LocalFileSourceSync('./samples/zip64_offset_overflow.zip')
         rz = await RemoteZip.open(src)
 
-        self.assertEqual(rz.entry(b'over').local_header_offset, 4294967430, "偏移量识别不正确")
-        self.assertEqual(rz.entry(b'offset_overflow-1').compressed_size, 2 * 1024 * 1024 * 1024)
+        with self.subTest(msg="Check header offset"):
+            self.assertEqual(rz.info(b'over').header_offset, 4294967430, "偏移量识别不正确")
+        with self.subTest(msg="Check compress size"):
+            self.assertEqual(rz.info(b'offset_overflow-1').compress_size, 2 * 1024 * 1024 * 1024, "文件大小不正确")
 
         await rz.close_source()
 
-    # async def test_too_many_entries(self):
+    # async def test_too_many_entries(self):  # No samples
     #     src = builtin_sources.LocalFileSourceSync('../samples/zip64_too_many_files.zip')
     #     rz = await RemoteZip.open(src)
     #
@@ -48,4 +27,7 @@ class Zip64Test(unittest.IsolatedAsyncioTestCase):
         src = builtin_sources.LocalFileSourceSync('./samples/zip64_one_big_file.zip')
 
         async with RemoteZip(src) as rz:
+            with self.subTest(msg='Check zip64'):
+                self.assertIsInstance(rz.lowlevel.eocd, )
+
             self.assertEqual(rz.original_size(b'big_4gb'), 4 * 1024 * 1024 * 1024)

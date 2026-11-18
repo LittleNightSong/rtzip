@@ -1,8 +1,9 @@
 import dataclasses
+import datetime
+import enum
 import struct
 from collections.abc import Buffer
-from typing import Annotated, Self
-
+from typing import Self
 
 EXTRA_FIELD_HEADER = struct.Struct("<HH")
 
@@ -22,6 +23,65 @@ def parse_extra_fields(buffer):
         offset += n_data
 
     return res
+
+
+def msdos_datetime_to_datetime(dos_date: int, dos_time: int) -> datetime.datetime:
+    # Written by DeepSeek
+    """
+    将 PKZip 中的 MS-DOS 格式日期和时间整数转换为 datetime.datetime 对象。
+
+    :param dos_date: 16位 MS-DOS 日期整数
+    :param dos_time: 16位 MS-DOS 时间整数
+    :return: 对应的 datetime.datetime 对象（本地时间，无时区信息）
+    """
+    # 解析日期
+    year = ((dos_date >> 9) & 0x7F) + 1980  # 提取位 9-15，并加上 1980
+    month = (dos_date >> 5) & 0x0F  # 提取位 5-8
+    day = dos_date & 0x1F  # 提取位 0-4
+
+    # 解析时间
+    hour = (dos_time >> 11) & 0x1F  # 提取位 11-15
+    minute = (dos_time >> 5) & 0x3F  # 提取位 5-10
+    second = (dos_time & 0x1F) * 2  # 提取位 0-4，并乘以 2 得到实际秒数
+
+    # 构造并返回 datetime 对象
+    return datetime.datetime(year, month, day, hour, minute, second)
+
+
+class ZipFlags(enum.IntFlag):
+    encrypted = enum.auto()
+    compression_option_1 = enum.auto()
+    compression_option_2 = enum.auto()
+    data_descriptor = enum.auto()
+    enhanced_deflation = enum.auto()
+    compressed_patched_data = enum.auto()
+    strong_encryption = enum.auto()
+    # bit 07-10 is unused
+    language = 1 << 11
+    # reserved = 1 << 12
+    mask_header_values = 1 << 13
+    # reserved_1 = 1 << 14
+    # reserved_2 = 1 << 15
+
+
+class ZipAlgorithms(enum.IntEnum):
+    none = 0
+    shrunk = 1
+    reduced_with_compression_factor_1 = 2
+    reduced_with_compression_factor_2 = 3
+    reduced_with_compression_factor_3 = 4
+    reduced_with_compression_factor_4 = 5
+    imploded = 6
+    # reserved = 7
+    deflated = 8
+    enhanced_deflated = 9
+    pkware_dcl_imploded = 10
+    bz2 = 12
+    lzma = 14
+    ibm_terse = 18
+    ibm_lz77_z = 19
+    ppmd_v1_rev1 = 98
+    winzip_aes = 99
 
 
 @dataclasses.dataclass(slots=True)
@@ -128,10 +188,10 @@ class CDEntry:
     :ivar unzip_min_version: 解压时需要使用的最低 zip 版本
     :ivar flags: 通用标志位
     :ivar algorithm: 压缩算法编号
-    :ivar last_modified: 文件的上次修改时间
+    :ivar last_modified_time: 文件的上次修改时间
     :ivar last_modified_date: 文件的上次修改日期
-    :ivar crc32_raw: CRC32 校验信息（这里使用整数存放）
-    :ivar compressed_size: 文件的压缩后大小
+    :ivar crc32: CRC32 校验信息（这里使用整数存放）
+    :ivar compress_size: 文件的压缩后大小
     :ivar original_size: 文件的未压缩大小
     :ivar filename_len: 文件名的长度
     :ivar extra_len: 扩展信息的长度
@@ -156,10 +216,10 @@ class CDEntry:
     unzip_min_version: int
     flags: int
     algorithm: int
-    last_modified: int
+    last_modified_time: int
     last_modified_date: int
-    crc32_raw: int
-    compressed_size: int
+    crc32: int
+    compress_size: int
     original_size: int
     filename_len: int
     extra_len: int
@@ -176,12 +236,20 @@ class CDEntry:
     _extra_fields: dict[int, bytes] | None = dataclasses.field(default=None, repr=False)
 
     @property
+    def last_modified_datetime(self) -> datetime.datetime:
+        try:
+            return msdos_datetime_to_datetime(self.last_modified_date, self.last_modified_time)
+        except ValueError:
+            from rtzip import BadZipError
+            raise BadZipError("Bad MS-DOS format date/time.")
+
+    @property
     def is_encrypted(self):
         """
         该文件是否被密码保护
         :return: 一个 bool 值，表示文件是否被密码保护
         """
-        return bool(self.flags & 0x0001)
+        return bool(self.flags & ZipFlags.encrypted)
 
     @property
     def is_zip64(self):
@@ -189,7 +257,7 @@ class CDEntry:
         是否需要 zip64 扩展才能获取信息
         :return:
         """
-        return self.compressed_size == 0xFFFFFFFF or self.original_size == 0xFFFFFFFF
+        return self.compress_size == 0xFFFFFFFF or self.original_size == 0xFFFFFFFF
 
     @property
     def has_data_descriptor(self):
@@ -199,7 +267,7 @@ class CDEntry:
 
         :return: 一个 bool 值，表示该文件条目是否使用了数据描述符协议
         """
-        return bool(self.flags & 0b100)
+        return bool(self.flags & ZipFlags.data_descriptor)
 
     @property
     def is_symlink(self):
@@ -228,10 +296,10 @@ class CDEntry:
         return 46 + self.filename_len + self.extra_len
 
     @property
-    def predicted_lfh_length(self):
+    def predicted_lfh_size(self):
         return 30 + self.filename_len + self.extra_len  # Signature(4) + LocalFileHeader(26) + Filename + Extra Fields
 
-    def fix_by_zip64(self):
+    def fix_zip64(self):
         """
         自动尝试获取 zip64 扩展信息，并补充当前文件对象的缺失信息
         :return:
@@ -249,12 +317,12 @@ class CDEntry:
                     from .errors import NotEnoughDataError
                     raise NotEnoughDataError(n, length - offset + n)
 
-                return int.from_bytes(z[offset-n:offset], 'little')
+                return int.from_bytes(z[offset - n:offset], 'little')
 
             if self.original_size == 0xFFFFFFFF:
                 self.original_size = readint()
-            if self.compressed_size == 0xFFFFFFFF:
-                self.compressed_size = readint()
+            if self.compress_size == 0xFFFFFFFF:
+                self.compress_size = readint()
             if self.local_header_offset == 0xFFFFFFFF:
                 self.local_header_offset = readint()
             if self.disk_id == 0xFFFF:
@@ -272,9 +340,18 @@ class CDEntry:
         buffer = memoryview(buffer)
         values = cls.__STRUCT__.unpack_from(buffer, offset)
         self = cls(*values, filename=b'', comment=b'', raw_extra_fields=b'')
-        self.fix_missing(buffer, offset + 42)
+
+        if len(buffer) - offset > self.filename_len + self.extra_len + self.comment_len:
+            self.fix_missing(buffer, offset + 42)
 
         return self
+
+    @property
+    def complete(self) -> bool:
+        return (
+                self.filename_len == len(self.filename)
+                and self.extra_len == len(self.raw_extra_fields)
+        )
 
     def fix_missing(self, data_after: Buffer, offset: int):
         buf = memoryview(data_after)
@@ -285,13 +362,13 @@ class CDEntry:
             raise NotEnoughDataError(filename_len + extra_len + comment_len, len(buf) - offset)
 
         pos = offset
-        self.filename = bytes(buf[pos:pos+filename_len])
+        self.filename = bytes(buf[pos:pos + filename_len])
         pos += filename_len
 
-        self.raw_extra_fields = bytes(buf[pos:pos+extra_len])
+        self.raw_extra_fields = bytes(buf[pos:pos + extra_len])
         pos += extra_len
 
-        self.comment = bytes(buf[pos:pos+comment_len])
+        self.comment = bytes(buf[pos:pos + comment_len])
         pos += comment_len
 
 
@@ -306,8 +383,8 @@ class LocalFileHeader:
     :ivar last_modified_time: 文件的上次修改时间
     :ivar last_modified_date: 文件的上次修改日期
     :ivar crc32: CRC32 校验信息（这里使用整数存放）
-    :ivar compressed_size: 文件的压缩后大小
-    :ivar uncompressed_size: 文件的未压缩大小
+    :ivar compress_size: 文件的压缩后大小
+    :ivar file_size: 文件的未压缩大小
     :ivar filename_len: 文件名的长度
     :ivar extra_len: 扩展信息的长度
 
@@ -322,8 +399,8 @@ class LocalFileHeader:
     last_modified_time: int
     last_modified_date: int
     crc32: int
-    compressed_size: int
-    uncompressed_size: int
+    compress_size: int
+    file_size: int
     filename_len: int
     extra_len: int
 
@@ -345,6 +422,14 @@ class LocalFileHeader:
         return self._extra_fields
 
     @property
+    def last_modified_datetime(self) -> datetime.datetime:
+        try:
+            return msdos_datetime_to_datetime(self.last_modified_date, self.last_modified_time)
+        except ValueError:
+            from rtzip import BadZipError
+            raise BadZipError("Bad MS-DOS format date/time.")
+
+    @property
     def total_size(self) -> int:
         """返回头部数据总大小（包含签名大小）"""
         # Signature(4) + Header(26) + Filename(n) + Extra Fields(m)
@@ -357,25 +442,42 @@ class LocalFileHeader:
         """
         if zip64_data := self.extra_fields.get(0x0001):
             original_size, compressed_size = struct.unpack('<QQ', zip64_data)
-            self.uncompressed_size = original_size
-            self.compressed_size = compressed_size
+            self.file_size = original_size
+            self.compress_size = compressed_size
+
+    def fix_data_descriptor(self, entry: CDEntry):
+        if self.flags | ZipFlags.data_descriptor:
+            self.file_size = entry.original_size
+            self.compress_size = entry.compress_size
+            self.crc32 = entry.crc32
 
     @classmethod
     def from_buffer(cls, buffer: Buffer, offset: int = 4) -> Self:
-        """从缓冲区解析 Local File Header，返回 (实例, 消耗字节数)"""
+        """从含有本地文件头信息的缓冲区解析 Local File Header，返回实例"""
         # 解析固定头部
+        buf = memoryview(buffer)
         values = cls.__STRUCT__.unpack_from(buffer, offset)
-        self = cls(*values, filename=b'', raw_extra_fields=b'')
-        self.fix_missing(buffer, offset + 26)
+        self = cls(*values, filename=b'', raw_extra_fields=b'')  # 先置 filename 等变长字段为空，再在后期填充
+
+        if len(buf) - offset >= self.total_size:
+            self.fix_missing(buffer, offset + 26)
 
         return self
+
+    @property
+    def complete(self) -> bool:
+        return (
+                self.filename_len == len(self.filename)
+                and self.extra_len == len(self.raw_extra_fields)
+        )
 
     def fix_missing(self, data_after: Buffer, offset: int):
         buf = memoryview(data_after)
         pos = offset
 
-        if len(buf) - offset < self.total_size:
-            raise
+        if len(buf) - offset < self.filename_len:
+            from rtzip import NotEnoughDataError
+            raise NotEnoughDataError(self.filename_len, len(buf) - offset)
 
         _ = self.filename_len
         self.filename = bytes(buf[pos:pos + _])
@@ -386,21 +488,3 @@ class LocalFileHeader:
         pos += _
 
         return self
-
-
-# if __name__ == '__main__':
-#     def show_struct(typ):
-#         print(f'{typ.__name__}: ({typ.__cendian__} "{typ.__ctype__}")')
-#         for field in dataclasses.fields(typ):
-#             if field.default is not dataclasses.MISSING:
-#                 print(f'\t{field.name}: {field.type.__name__} = {field.default}')
-#             elif field.default_factory is not dataclasses.MISSING:
-#                 print(f'\t{field.name}: {field.type.__name__} = {field.default_factory}()')
-#             else:
-#                 print(f'\t{field.name}: {field.type.__name__}')
-#
-#     show_struct(EOCD)
-#     show_struct(Zip64EOCD)
-#     show_struct(CDEntry)
-#     show_struct(LocalFileHeader)
-

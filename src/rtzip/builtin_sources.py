@@ -1,13 +1,13 @@
 from .errors import NotEnoughDataError
-from .remotezip import DataSource
+from . import DataSource
 import os
 
 
 class LocalFileSourceSync(DataSource):
-    def __init__(self, file):
+    def __init__(self, file, chunk_size=2048):
         self.file = file
         self.fp = open(file, 'rb')
-        self.chunk_size = 1024 * 1024
+        self.chunk_size = chunk_size
 
     async def read_range_stream(self, offset, length):
         self.fp.seek(offset)

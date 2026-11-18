@@ -1,8 +1,8 @@
-from typing import AsyncGenerator, Any, Protocol, runtime_checkable
+from typing import AsyncGenerator, Protocol, runtime_checkable
 
-from .errors import UnsupportedAlgorithmError
-from .models import CDEntry, LocalFileHeader
 from .context import Context
+from .errors import UnsupportedAlgorithmError
+from .structs import CDEntry, LocalFileHeader
 
 type IndexAcceptedTypes = bytes | bytearray | memoryview
 
@@ -13,7 +13,7 @@ class AlgorithmHandler(Protocol):
             self,
             raw_data: AsyncGenerator[IndexAcceptedTypes, None],
             entry: CDEntry,
-            header: LocalFileHeader,
+            header: LocalFileHeader | None,
             context: Context,
             /
     ) -> AsyncGenerator[IndexAcceptedTypes, None]:
@@ -22,7 +22,7 @@ class AlgorithmHandler(Protocol):
 
         :param raw_data: 原始数据流（异步生成器）
         :param entry: 当前文件的 CDEntry 对象
-        :param header: 当前文件的 LocalFileHeader 对象（已经过文件描述符修补）
+        :param header: 当前文件的 LocalFileHeader 对象（已经过文件描述符修补）,在受到 context.read_dont_fetch_header
         :param context: 上下文信息
         :return:
         """
@@ -65,6 +65,7 @@ def get_algorithm_handler(algorithm: int) -> AlgorithmHandler:
 
 def get_algorithm_handler_safe(algorithm: int) -> AlgorithmHandler | None:
     return algorithm_mapping.get(algorithm)
+
 
 def is_algorithm_handler_available(algorithm: int) -> bool:
     """

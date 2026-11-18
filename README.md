@@ -83,8 +83,8 @@ rz = RemoteZip(HTTPSource(url=..., session=...)))
 
 `rtzip` 在实现上分为两层：
 
-- **Low-level**：`LowLevelRemoteZip`，提供读取远程 zip 文件的底层方法，全部为异步，直接操作原始路径，不自动做路径规范化，也不自动维护规范化映射表。
 - **High-level**：`RemoteZip`，提供以规范化路径为核心的便捷接口，同时通过 `lowlevel` 属性暴露了底层 `LowLevelRemoteZip` 对象。
+- **Low-level**：`LowLevelRemoteZip`，提供读取远程 zip 文件的底层方法，全部为异步，直接操作原始路径，不自动做路径规范化，也不自动维护规范化映射表。
 
 ---
 
@@ -263,7 +263,7 @@ async def your_deflate_wrapper(raw_generator, entry, header, ctx):
 
 ### 启用加密文件支持
 
-rtzip 提供了基于`cryptography`的加密支持。
+rtzip 提供了基于`cryptography`和`tgcrypto-c-lectr`的加密支持，同时也允许自定义加密后端。
 
 #### pycryptodome
 
@@ -274,6 +274,19 @@ pycryptodome_impl.install()
 ```
 
 rtzip 还有一个基于 `cryptography` 的加密支持，但由于其硬性约束，使用对性能影响极大
+
+
+#### Tgcrypto-c-lectr
+
+```python
+from rtzip.wzaes_backends import tgcrypto_c_lectr_impl
+
+tgcrypto_c_lectr_impl.install()
+```
+
+> [!NOTE]
+> [`tgcrypto-c-lectr`](https://github.com/LittleNightSong/tgcrypto-c-lectr) 
+> 是基于 'tgcrypto-c' 衍生的项目， 其修改了 `CTR` 的实现使计数器变为 `WinZip AES` 所需的小端序。
 
 #### cryptography (已弃用)
 
@@ -351,7 +364,7 @@ def install():
 - `pbkdf2_hmac_implement(func)`: 注册一个 PBKDF2_HMAC_SHA1 实现
 - `aes_cipher_implement(cls)`: 注册一个 AESCipher 实现
 
-它们并不强制成套出现，但是你需要确保两种实现都有被设置。
+它们并不强制成对出现，但是你需要确保两种实现都有被设置。
 
 这两个函数都位于 `rtzip.zip_aes` 下。
 
