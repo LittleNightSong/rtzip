@@ -4,18 +4,12 @@ import dataclasses
 def _merge(ctx: 'Context', other: 'Context') -> 'Context':
     dct = {}
 
-    for f in dataclasses.fields(ctx):
+    for f in dataclasses.fields(Context):
         if f.name == 'extras':
             continue
 
-        x = getattr(ctx, f.name)
-        if f.default is not dataclasses.MISSING and f.default is x:
-            continue
-
-        if f.default_factory is not dataclasses.MISSING and not bool(x):
-            continue
-
-        dct[f.name] = x
+        if f.name in other._modifiers:
+            dct[f.name] = getattr(other, f.name)
 
     dct['extras'] = dict(ctx.extras)
     dct['extras'].update(other.extras)
@@ -39,8 +33,6 @@ class Context:
     """如果实例上已有拉取到的 ``EOCD`` 是否直接使用缓存而跳过扫描"""
 
     # Read Action
-    read_dont_fetch_header: bool = False
-    """读取的时候不拉取本地文件头，直接从中央目录入口对象中推断文件起始偏移量"""
     read_validate_header_and_entry: bool = False
     """读取时对本地文件头和中央目录入口对象进行交叉验证"""
     read_size_max: int | None = None
@@ -55,12 +47,25 @@ class Context:
     extras: dict = dataclasses.field(default_factory=dict)
     """额外的配置项"""
 
+    _initialized: bool = dataclasses.field(default=False, init=False, repr=False)
+    _modifiers: set = dataclasses.field(default_factory=set, init=False, repr=False)
+
+    # _extra_modifiers: set = dataclasses.field(default_factory=set, init=False, repr=False)
+
     # Helpers
+    def __post_init__(self):
+        self._initialized = True
 
     def __setattr__(self, name, value):
+        if name == '_initialized':
+            super(Context, self).__setattr__(name, value)
+            return
         try:
             super(Context, self).__setattr__(name, value)
+            if self._initialized:
+                self._modifiers.add(name)
         except AttributeError:
+            # self._extra_modifiers.add(name)
             self.extras[name] = value
 
     def __getattr__(self, name):
@@ -73,28 +78,22 @@ class Context:
         if isinstance(other, Context):
             return _merge(self, other)
 
-        elif isinstance(other, dict):
-            other_extras = {
-                k: v
-                for k, v in other.items()
-                if k not in self.extras
-            }
-
-            extras = dict(self.extras)
-            extras.update(other_extras)
-
-            other_normals = {
-                k: v
-                for k, v in other.items()
-                if k in self.extras
-            }
-
-            return dataclasses.replace(
-                self, **other_normals, extras=extras
-            )
-
         else:
             return NotImplemented
 
 
-_context_fields = set(dataclasses.fields(Context))
+_old_init = Context.__init__
+
+
+def _init(self, *args, **kwargs):
+    self._initialized = False
+    _old_init(self, *args, **kwargs)
+
+    for field in dataclasses.fields(Context)[:len(args)]:
+        self._modifiers.add(field.name)
+
+    for k in kwargs.keys():
+        self._modifiers.add(k)
+
+
+Context.__init__ = _init

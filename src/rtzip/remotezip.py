@@ -1,8 +1,7 @@
 import dataclasses
 import types
-import typing
 from fnmatch import fnmatch
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable, Generator
 
 from . import structs as _structs
 from .algorithm_register import is_algorithm_handler_available, get_algorithm_handler
@@ -31,6 +30,9 @@ def check_header_and_entry(header: LocalFileHeader, entry: CDEntry, /):
         raise BadZipError('Validating local file header with central directory entry failed.')
 
 
+type BinaryStream = AsyncGenerator[bytes | bytearray | memoryview, None]
+
+
 @dataclasses.dataclass(slots=True, kw_only=True, frozen=True)
 class FileInfo:
     filename: bytes
@@ -54,8 +56,15 @@ class FileInfo:
 
     flags: int
 
-    _entry: CDEntry | None = None
+    _entry: CDEntry
     _parsed_extra: dict[int, bytes] | None = None
+
+    @property
+    def extra_fields(self):
+        if self._parsed_extra is None:
+            object.__setattr__(self, '_parsed_extra', _structs.parse_extra_fields(self.original_extra))
+
+        return self._parsed_extra
 
     @classmethod
     def from_entry(cls, e: CDEntry, *, parse_extra: bool = False) -> 'FileInfo':
@@ -93,7 +102,7 @@ class RemoteZip:
     （RemoteZip 不会缓存已读取的文件，你需要自己保证数据复用）
 
     """
-    __slots__ = ('_low', '_namelist', '_mapping', '_entries')
+    # __slots__ = ('_low', '_namelist', '_mapping', '_entries', 'context')
 
     structs = _structs
 
@@ -102,11 +111,13 @@ class RemoteZip:
             source: DataSource,
             context: Context | None = None,
     ):
-        self._low = LowLevelRemoteZip(source, context or Context())
+        self._low = LowLevelRemoteZip(source)
+        self.context: Context = context or Context()
 
         self._namelist: list[bytes] | None = None
         self._mapping: dict[bytes, FileInfo] | None = None
         self._entries: list[FileInfo] | None = None
+        self._raw_cd: list[CDEntry] | None = None
 
     @property
     def lowlevel(self):
@@ -117,18 +128,14 @@ class RemoteZip:
         return self._low.source
 
     @property
-    def context(self):
-        return self._low.context
-
-    @property
     def infolist(self) -> list[FileInfo]:
         if self._entries is None:
-            if self._low.central_directory is None:
+            if self._raw_cd is None:
                 raise ValueError("Central directory is not fetched. Please call `init()` first")
 
             self._entries = [
                 FileInfo.from_entry(e)
-                for e in self._low.central_directory
+                for e in self._raw_cd
             ]
 
         return self._entries  # type: ignore
@@ -159,7 +166,7 @@ class RemoteZip:
         return len(self.infolist)
 
     def compute_total_size(self):
-        if self._low.central_directory is None:
+        if self._raw_cd is None:
             raise ValueError("Central directory is not fetched. Please call `init()` first")
 
         return sum(
@@ -171,8 +178,8 @@ class RemoteZip:
         初始化和拉取基本的元数据（EOCD 和中央仓库）
         :return:
         """
-        await self._low.fetch_eocd()
-        await self._low.fetch_central_directory()
+        eocd = await self._low.scan_eocd()
+        self._raw_cd = await self._low.list_central_directory_in(eocd.cd_offset, eocd.cd_size)
         await self.setup_source()
 
     async def close_source(self):
@@ -208,12 +215,12 @@ class RemoteZip:
         :param context: 上下文信息，其中的设置会自动覆盖已有的设置
         :return: 一个字节流异步生成器
         """
-        x = self.range_and_handler(filename, context)
-        if isinstance(x, types.CoroutineType):
-            start, length, handler = await x
-        else:
-            start, length, handler = x
+        start, length, handler = await self.range_and_handler(filename, context)
 
+        gen = handler(self._low.source.read_range_stream(start, length))
+
+        async for i in gen:
+            yield i
 
     async def read(self, filename: bytes, context: Context | None = None) -> bytearray:
         """
@@ -226,7 +233,7 @@ class RemoteZip:
         :return: 一个 bytearray 表示文件内容
         """
 
-        context = (self._low.context | context) if context else Context()
+        context = (self.context | context) if context else Context()
 
         buffer = bytearray()
         async for i in self.stream(filename, context):
@@ -249,9 +256,9 @@ class RemoteZip:
 
     def listdir_info(self, path: bytes) -> list[FileInfo]:
         """
-        枚举该目录下所有文件的 CDEntry 对象
+        枚举该目录下所有文件的 FileInfo 对象
         :param path: 目录路径
-        :return: 目录下所有文件的 CDEntry 对象列表
+        :return: 目录下所有文件的 FileInfo 对象列表
         """
         path = normpath(path, ensure_end_with_sep=True)
         return [
@@ -315,122 +322,88 @@ class RemoteZip:
         length = entry.compress_size
         return start, length
 
-    def content_range(self, filename: bytes, context: Context | None = None) -> tuple[int, int] | typing.Coroutine[
-        typing.Any, typing.Any, tuple[int, int]]:
+    async def content_range(self, filename: bytes, context: Context | None = None) -> tuple[int, int]:
         """
         获取文件内容的区间
 
-        如果指定了 ``context.read_dont_fetch_header`` 函数会立即返回区间二元组，
-        否则函数将返回一个 ``Coroutine``，你需要等待它以获取区间二元组。
-
         :param filename: 文件名
         :param context: 上下文
-        :return: 文件内容的起始偏移量和长度（可能为协程）
+        :return: 文件内容的起始偏移量和长度
         """
 
+        context = (self.context | context) if context else self.context
         info = self.info(filename)
 
-        context = (self._low.context | context) if context else self._low.context
+        header = await self.header(filename)
 
-        if context.read_dont_fetch_header:
-            return info.header_offset + info._entry.predicted_lfh_size, info.compress_size
+        if context.read_validate_header_and_entry:
+            check_header_and_entry(header, info._entry)
 
-        async def _():
-            header: LocalFileHeader = (await self._low.fetch_local_file_header(entry=info._entry))[0]
+        return info.header_offset + header.total_size, info.compress_size
 
-            if context.read_validate_header_and_entry:
-                check_header_and_entry(header, info._entry)
+    async def range_and_algorithm(self, filename: bytes, context: Context | None = None) -> tuple[int, int, int]:
 
-            return info.header_offset + header.total_size, info.compress_size
-
-        return _()
-
-    def range_and_algorithm(self, filename: bytes, context: Context | None = None) -> tuple[int, int, int] | typing.Coroutine[
-        typing.Any, typing.Any, tuple[int, int, int]]:
         """
         获取文件内容的区间（start, length）和该文件使用的压缩算法标识
+
         :param filename: 文件名
         :param context: 上下文
-        :return: 一个三元组，包含文件内容区间和压缩算法标识
+        :return: 一个三元组（start, length, algorithm），包含文件内容区间和压缩算法标识
         """
         info = self.info(filename)
+        header = await self.header(filename)
 
-        context = (self._low.context | context) if context else self._low.context
+        return info.header_offset + header.total_size, info.compress_size, header.algorithm
 
-        if context.read_dont_fetch_header:
-            return info.header_offset + info._entry.predicted_lfh_size, info.compress_size, info.algorithm
-
-        async def _():
-            header: LocalFileHeader = (await self._low.fetch_local_file_header(entry=info._entry))[0]
-
-            if context.read_validate_header_and_entry:
-                check_header_and_entry(header, info._entry)
-
-            return info.header_offset + header.total_size, info.compress_size, header.algorithm
-
-        return _()
-
-    def range_and_handler(
+    async def range_and_handler(
             self,
             filename: bytes,
             context: Context | None = None
-    ) -> tuple[
-        int, int, typing.Callable[[AsyncGenerator[bytes | memoryview | bytearray, None]], AsyncGenerator[
-            bytes | memoryview | bytearray, None]]]:
+    ) -> \
+            tuple[int, int, Callable[[BinaryStream], BinaryStream]]:
         """
         获取一个文件的内容区间和所需要的处理器
         :param filename: 文件名
         :param context: 上下文信息
         :return: 文件的内容区间和所需要的处理器
         """
-        entry = self.info(filename)._entry
+        # entry = self.info(filename)._entry
+        #
+        # if entry is None:
+        #     raise ValueError(f"Bad entry object for {filename!r}")
 
-        if entry is None:
-            raise ValueError(f"Bad entry object for {filename!r}")
+        ctx = self.context if context is None else (self.context | context)
+        info = self.info(filename)
 
-        if not is_algorithm_handler_available(entry.algorithm):
-            raise UnsupportedAlgorithmError(entry.algorithm)
+        if not is_algorithm_handler_available(info.algorithm):
+            raise UnsupportedAlgorithmError(info.algorithm)
 
-        ctx = self._low.context if context is None else (self._low.context | context)
+        header, _ = await self._low.parse_header_at(info.header_offset)
 
-        if ctx.read_dont_fetch_header:
-            if entry.is_encrypted and entry.algorithm != 0x63:  # ZipCrypto
-                from .zip_crypto import zipcrypto_wrapper
+        if ctx.read_validate_header_and_entry:
+            check_header_and_entry(header, info._entry)
 
-                async def handler(raw_data):
-                    gen = get_algorithm_handler(entry.algorithm)(
-                        zipcrypto_wrapper(raw_data, entry, None, ctx),
-                        entry, None, ctx
-                    )
-                    async for i in gen:
-                        yield i
+        algorithm_handler = get_algorithm_handler(info.algorithm)
 
-        # 处理 ZipCrypto
-        if entry.is_encrypted and entry.algorithm != 0x63:  # ZipCrypto
+        if info.flags & _structs.ZipFlags.encrypted and info.algorithm != 99:
+            # Zip Crypto 加密方式
             from .zip_crypto import zipcrypto_wrapper
 
-            async def handler(raw_data):
-                header, _ = await self._low.fetch_local_file_header(entry=entry)
-
-                gen = get_algorithm_handler(entry.algorithm)(
-                    zipcrypto_wrapper(raw_data, entry, header, ctx),
-                    entry, header, ctx
+            def handler(raw: BinaryStream):
+                return algorithm_handler(
+                    zipcrypto_wrapper(raw, header.crc32, ctx),
+                    info._entry, header, ctx
                 )
-                async for i in gen:
-                    yield i
+
+            return info.header_offset + header.total_size, header.compress_size, handler
 
         else:
-            _handler = get_algorithm_handler(entry.algorithm)
+            def handler(raw: BinaryStream):
+                return algorithm_handler(
+                    raw, info._entry, header, ctx
+                )
 
-            async def handler(raw_data):
-                header, _ = await self._low.fetch_local_file_header(entry=entry)
-
-                gen = get_algorithm_handler(entry.algorithm)(raw_data, entry, header, ctx)
-                async for i in gen:
-                    yield i
-
-        offset = entry.local_header_offset + entry.predicted_lfh_size
-        return offset, entry.compress_size, handler
+            return info.header_offset + header.total_size, header.compress_size, handler
 
     async def header(self, filename: bytes) -> LocalFileHeader:
         """
@@ -438,7 +411,8 @@ class RemoteZip:
         :param filename: 文件名
         :return: 文件的本地文件头
         """
-        return (await self._low.fetch_local_file_header(entry=self.info(filename)._entry))[0]
+        header, _ = await self._low.parse_header_at(self.info(filename).header_offset)
+        return header
 
     async def read_text(self, filename: bytes, encoding='utf-8', errors='strict',
                         context: Context | None = None) -> str:
@@ -452,10 +426,10 @@ class RemoteZip:
         """
         return (await self.read(filename, context)).decode(encoding, errors=errors)
 
-    def rglob(self, pattern: bytes) -> typing.Generator[bytes, None, None]:
+    def rglob(self, pattern: bytes) -> Generator[bytes, None, None]:
         """
         递归模式匹配文件
-
+    
         :param pattern: 模式
         :return: 匹配的文件的生成器
         """
@@ -463,7 +437,7 @@ class RemoteZip:
             if fnmatch(file, pattern):
                 yield file
 
-    def rglob_info(self, pattern: bytes) -> typing.Generator[FileInfo, None, None]:
+    def rglob_info(self, pattern: bytes) -> Generator[FileInfo, None, None]:
         """
         递归模式匹配文件，返回匹配到的文件的 FileInfo 对象
         :param pattern: 模式

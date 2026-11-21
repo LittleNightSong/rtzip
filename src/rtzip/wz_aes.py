@@ -250,7 +250,7 @@ async def zip_aes_stream_decryptor(
 
     size = 0
     buf = bytearray()
-    stream = io.raw_stream()
+    stream = io.stream_elapsed()
     async for chunk in stream:  # 开始遍历真正的数据
         size += len(chunk)  # 累计大小
 

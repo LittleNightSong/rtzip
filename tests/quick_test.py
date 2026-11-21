@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import itertools
 import re
 from pathlib import Path
@@ -64,6 +65,16 @@ def bytes_diff(a, b):
 
 
 def show_diff(a, b, line_size=16):
+    from builtins import print
+#
+#     sm = difflib.SequenceMatcher(None, a, b)
+#     for op, i1, i2, j1, j2 in sm.get_opcodes():
+#         match op:
+#             case 'equal':
+#                 print()
+#
+#             case ''
+
     for i, batch in enumerate(itertools.batched(bytes_diff(a, b), line_size)):
         line_x = (k[0] for k in batch)
         line_y = (k[1] for k in batch)
@@ -126,7 +137,8 @@ async def main():
     root = Path(__file__).parent.parent
     samples = root / 'samples'
 
-    zipfile = samples / 'random-zip-aes-lzma.zip'
+    # zipfile = samples / 'random.bin.zip'
+    zipfile = samples / 'random.bin-zip-norm-store.zip'
 
     source = LocalFileSourceSync(zipfile)
     rz = await RemoteZip.open(source, Context(pwd=pwd))
@@ -136,10 +148,13 @@ async def main():
 
     comparing_pyzipper(zipfile, file.decode()[1:], original_file, pwd)
 
+    print("Rtzip")
     await compare_file(rz, file, original_file)
 
     # print(rz.info(file)._entry.last_modified_time)
     # print(rz.info(file)._entry.last_modified_date)
+
+    # TODO: Find why data error
 
 
 if __name__ == '__main__':

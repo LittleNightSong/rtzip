@@ -60,7 +60,7 @@ async def lzma_wrapper(gen, entry, header, ctx):
 
     decompressor = lzma.LZMADecompressor(lzma.FORMAT_RAW, None, filters=filters)
 
-    async for chunk in stream.raw_stream():
+    async for chunk in stream.stream_elapsed():
         data = decompressor.decompress(chunk)
         if data:
             yield data
@@ -100,27 +100,51 @@ async def bz2_wrapper(gen, entry, header, ctx):
         )
 
 
+async def zstd_wrapper(gen, entry, header, ctx):  # Not Tested
+    import warnings
+    warnings.warn("ZStandard support is experimental and has not been tested")
+
+    import compression.zstd as zstd
+    decompressor = zstd.ZstdDecompressor()
+    async for chunk in gen:
+        data = decompressor.decompress(chunk)
+        if data:
+            yield data
+
+    if not decompressor.eof:
+        raise ValueError(
+            "ZStandard compressed data stream ended unexpectedly (EOF not reached) – "
+            "data may be truncated or corrupted"
+        )
+
+    if decompressor.unused_data:
+        raise ValueError(
+            f"ZStandard stream contains {len(decompressor.unused_data)} bytes of trailing data after the end marker – "
+            f"possibly concatenated streams or extra metadata"
+        )
+
+
+async def ppmd_wrapper(gen, entry, header, ctx):
+    import pyppmd
+
+    stream = StreamIO(gen)
+
+    ppmd_header = await stream.read_exactly(2)  # zip ppmd 有两字节的压缩头
+    w = int.from_bytes(ppmd_header, 'little')
+
+    mmo = (w & 0x0F) + 1
+    sas = ((w >> 4) & 0xFF) + 1
+    wrm = ((w >> 12) & 0x0F)
+
+    dec = pyppmd.PpmdDecompressor(mmo, sas, restore_method=wrm)
+
+    async for chunk in stream.stream_elapsed():
+        if data := dec.decompress(chunk):
+            yield data
+
+
 if sys.version_info >= (3, 14):
-    @algorithm_handler(0x000D)
-    async def zstd_wrapper(gen, entry, header, ctx):  # Not Tested
-        import warnings
-        warnings.warn("ZStandard support is experimental and has not been tested")
+    algorithm_handler(0x000D)(zstd_wrapper)
 
-        import compression.zstd as zstd
-        decompressor = zstd.ZstdDecompressor()
-        async for chunk in gen:
-            data = decompressor.decompress(chunk)
-            if data:
-                yield data
-
-        if not decompressor.eof:
-            raise ValueError(
-                "ZStandard compressed data stream ended unexpectedly (EOF not reached) – "
-                "data may be truncated or corrupted"
-            )
-
-        if decompressor.unused_data:
-            raise ValueError(
-                f"ZStandard stream contains {len(decompressor.unused_data)} bytes of trailing data after the end marker – "
-                f"possibly concatenated streams or extra metadata"
-            )
+if sys.modules.get('pyppmd'):
+    algorithm_handler(0x0062)(ppmd_wrapper)

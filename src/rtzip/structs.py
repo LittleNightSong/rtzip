@@ -98,6 +98,7 @@ class EOCD:
     :ivar comment_length: 注释的长度，注释紧跟在 EOCD 的后方
     """
     __STRUCT__ = struct.Struct("<HHHHIIH")
+    # Struct Size: 34
 
     disk_num: int
     cd_disk: int
@@ -143,6 +144,7 @@ class Zip64EOCD:
     total_entries: int
     cd_size: int
     cd_offset: int
+
     extra_data: bytes
 
     header_size = 52
@@ -304,8 +306,7 @@ class CDEntry:
         自动尝试获取 zip64 扩展信息，并补充当前文件对象的缺失信息
         :return:
         """
-        zip64_data = (self.extra_fields.get(1))
-        if zip64_data:
+        if zip64_data := self.extra_fields.get(1):
             z = memoryview(zip64_data)
             length = len(z)
             offset = 0

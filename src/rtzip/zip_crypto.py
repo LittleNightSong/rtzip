@@ -60,8 +60,7 @@ def decrypt_byte(k2: int) -> int:
 
 async def zipcrypto_wrapper(
         raw_data: AsyncGenerator[bytes | bytearray | memoryview, None],
-        entry: CDEntry,
-        header: LocalFileHeader | None,
+        crc32: int,
         ctx: Context
 ) -> AsyncGenerator[bytes, None]:
 
@@ -73,8 +72,6 @@ async def zipcrypto_wrapper(
     buffer = bytearray()
 
     keys = crc_keys_from_bytes(pwd)
-
-    crc = header.crc32
 
     # Get encrypted header
     while 12 > len(buffer):
@@ -89,7 +86,7 @@ async def zipcrypto_wrapper(
 
         keys = crc_update_keys_byte(dec, *keys)
 
-        if b == 11 and dec != ((crc >> 24) & 0xFF):
+        if b == 11 and dec != ((crc32 >> 24) & 0xFF):
             raise ValueError("Wrong Password")
 
     # 开始解密文件的数据

@@ -1,4 +1,6 @@
+import subprocess
 from pathlib import Path
+from typing import Literal
 
 parent = Path(__file__).parent
 
@@ -44,6 +46,50 @@ def generate_zip64_offset_overflow():
             f.write(data_1mb)
 
 
+def sevenzip_new(
+        algo, source, output_file,
+        crypto: Literal['no-crypto', 'aes', 'zip-crypto'] = 'no-crypto',
+        password: str | None = None
+):
+    args = ['7z', 'a', '-tzip', f'-m0={algo}']
+
+    if crypto != 'no-crypto':
+        en = 'AES256' if crypto == 'aes' else 'ZipCrypto'
+        args.extend([f'-mem={en}', f'-p{password}'])
+
+    args.extend([str(output_file), str(source)])
+
+    subprocess.run(args, check=True)
+
+
+def generate_all_combinations():
+    algorithms = ['Deflate', 'Store', 'BZip2', 'LZMA']
+    sources = ['random.bin', 'zero.bin', 'plain.txt']
+
+    for source in sources:
+        for algo in algorithms:
+            print(f"为 {source} 的 {algo} 算法生成加密变体（Normal/AES256/ZipCrypto）")
+            srcfile = samples / source
+            sevenzip_new(
+                algo,
+                srcfile,
+                samples / f'{source}-zip-norm-{algo.lower()}.zip',
+                crypto='no-crypto', password=None
+            )
+            sevenzip_new(
+                algo,
+                srcfile,
+                samples / f'{source}-zip-aes-{algo.lower()}.zip',
+                crypto='aes', password='password'
+            )
+            sevenzip_new(
+                algo,
+                srcfile,
+                samples / f'{source}-zip-zipcrypto-{algo.lower()}.zip',
+                crypto='zip-crypto', password='password'
+            )
+
+
 def generate():
     print("创建 zip64 文件：数量超出范围（Zip64 EOCD）......")
     generate_zip64_too_many_files()
@@ -54,4 +100,5 @@ def generate():
 
 
 if __name__ == '__main__':
-    generate()
+    # generate()
+    generate_all_combinations()
