@@ -1,5 +1,4 @@
 import asyncio
-import difflib
 import itertools
 import re
 from pathlib import Path
@@ -66,14 +65,14 @@ def bytes_diff(a, b):
 
 def show_diff(a, b, line_size=16):
     from builtins import print
-#
-#     sm = difflib.SequenceMatcher(None, a, b)
-#     for op, i1, i2, j1, j2 in sm.get_opcodes():
-#         match op:
-#             case 'equal':
-#                 print()
-#
-#             case ''
+    #
+    #     sm = difflib.SequenceMatcher(None, a, b)
+    #     for op, i1, i2, j1, j2 in sm.get_opcodes():
+    #         match op:
+    #             case 'equal':
+    #                 print()
+    #
+    #             case ''
 
     for i, batch in enumerate(itertools.batched(bytes_diff(a, b), line_size)):
         line_x = (k[0] for k in batch)
@@ -132,7 +131,7 @@ async def main():
     tgcrypto_c_lectr_impl.install()
     # pycryptodome_impl.install(override=True)
 
-    pwd = b'114514'
+    pwd = b'password'
 
     root = Path(__file__).parent.parent
     samples = root / 'samples'
@@ -153,7 +152,6 @@ async def main():
 
     # print(rz.info(file)._entry.last_modified_time)
     # print(rz.info(file)._entry.last_modified_date)
-
 
 
 if __name__ == '__main__':

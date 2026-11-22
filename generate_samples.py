@@ -4,20 +4,17 @@ from typing import Literal
 
 parent = Path(__file__).parent
 
-if parent.name == 'tests':
-    parent = parent.parent
-
 samples = parent / 'samples'
 samples.mkdir(parents=True, exist_ok=True)
 
 
-def generate_zip64_too_many_files():  # TODO: do not work
-    import zipfile
-
-    with zipfile.ZipFile(samples / 'zip64_too_many_files.zip', 'w') as zf:
-        for i in range(100000):
-            data = i.to_bytes(8)
-            zf.writestr(f'file_{i}', data)
+# def generate_zip64_too_many_files():  # TODO: do not work
+#     import zipfile
+#
+#     with zipfile.ZipFile(samples / 'zip64_too_many_files.zip', 'w') as zf:
+#         for i in range(100000):
+#             data = i.to_bytes(8)
+#             zf.writestr(f'file_{i}', data)
 
 
 def generate_zip64_one_big_file():
@@ -91,8 +88,8 @@ def generate_all_combinations():
 
 
 def generate():
-    print("创建 zip64 文件：数量超出范围（Zip64 EOCD）......")
-    generate_zip64_too_many_files()
+    # print("创建 zip64 文件：数量超出范围（Zip64 EOCD）......")
+    # generate_zip64_too_many_files()
     print("创建 zip64 文件：单文件大小超出范围（Zip64 EOCD）......")
     generate_zip64_one_big_file()
     print("创建 zip64 文件：偏移量超出范围（Zip64 EOCD）......")
@@ -100,5 +97,5 @@ def generate():
 
 
 if __name__ == '__main__':
-    # generate()
+    generate()
     generate_all_combinations()

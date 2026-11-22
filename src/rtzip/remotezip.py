@@ -110,14 +110,23 @@ class RemoteZip:
             self,
             source: DataSource,
             context: Context | None = None,
+            lowlevel: LowLevelRemoteZip | None = None,
     ):
-        self._low = LowLevelRemoteZip(source)
+        self._low = lowlevel or LowLevelRemoteZip(source)
         self.context: Context = context or Context()
 
         self._namelist: list[bytes] | None = None
         self._mapping: dict[bytes, FileInfo] | None = None
         self._entries: list[FileInfo] | None = None
         self._raw_cd: list[CDEntry] | None = None
+        self._raw_eocd: _structs.EOCD | _structs.Zip64EOCD | None = None
+
+    @property
+    def eocd(self) -> _structs.EOCD | _structs.Zip64EOCD:
+        if self._raw_eocd is None:
+            raise ValueError("EOCD not fetched yet; call `init()` first.")
+
+        return self._raw_eocd
 
     @property
     def lowlevel(self):
@@ -131,7 +140,7 @@ class RemoteZip:
     def infolist(self) -> list[FileInfo]:
         if self._entries is None:
             if self._raw_cd is None:
-                raise ValueError("Central directory is not fetched. Please call `init()` first")
+                raise ValueError("Central directory not fetched yet; call `init()` first.")
 
             self._entries = [
                 FileInfo.from_entry(e)
@@ -178,7 +187,7 @@ class RemoteZip:
         初始化和拉取基本的元数据（EOCD 和中央仓库）
         :return:
         """
-        eocd = await self._low.scan_eocd()
+        self._raw_eocd = eocd = await self._low.scan_eocd()
         self._raw_cd = await self._low.list_central_directory_in(eocd.cd_offset, eocd.cd_size)
         await self.setup_source()
 

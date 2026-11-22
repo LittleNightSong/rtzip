@@ -294,8 +294,8 @@ class CDEntry:
         此入口点对象所占用的字节数，包括 4 字节的签名和变长字段
         :return:
         """
-        # Signature (4) + Header(42) + Filename + Extra Fields
-        return 46 + self.filename_len + self.extra_len
+        # Signature (4) + Header(42) + Filename + Extra Fields + Comment
+        return 46 + self.filename_len + self.extra_len + self.comment_len
 
     @property
     def predicted_lfh_size(self):
@@ -342,7 +342,7 @@ class CDEntry:
         values = cls.__STRUCT__.unpack_from(buffer, offset)
         self = cls(*values, filename=b'', comment=b'', raw_extra_fields=b'')
 
-        if len(buffer) - offset > self.filename_len + self.extra_len + self.comment_len:
+        if buffer.nbytes >= self.total_size:
             self.fix_missing(buffer, offset + 42)
 
         return self
@@ -358,7 +358,7 @@ class CDEntry:
         buf = memoryview(data_after)
         filename_len, extra_len, comment_len = self.filename_len, self.extra_len, self.comment_len
 
-        if len(buf) - offset < filename_len + extra_len + comment_len:
+        if buf.nbytes < filename_len + extra_len + comment_len:
             from .errors import NotEnoughDataError
             raise NotEnoughDataError(filename_len + extra_len + comment_len, len(buf) - offset)
 

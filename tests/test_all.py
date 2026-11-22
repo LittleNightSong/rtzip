@@ -5,9 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-# 必须要提前 import，不然 ppmd 算法的自动安装会失败
-import pyppmd  # type:ignore
-
 from rtzip import RemoteZip, Context
 from rtzip.builtin_sources import LocalFileSourceSync
 from rtzip.wzaes_backends import tgcrypto_c_lectr_impl
@@ -56,7 +53,7 @@ samples = project / 'samples'
 
 
 @dataclass
-class TestFile:
+class SampleFile:
     path: Path
     src: Path
     crypto_mode: Literal['aes', 'norm', 'zipcrypto']
@@ -74,10 +71,10 @@ class TestAll(unittest.IsolatedAsyncioTestCase):
     )
 
     def setUp(self) -> None:
-        self.files: list[TestFile] = []
+        self.files: list[SampleFile] = []
         for file in samples.iterdir():
             if file.is_file() and (match := self.filename_spec.fullmatch(file.name)):
-                self.files.append(TestFile(
+                self.files.append(SampleFile(
                     file,
                     src=samples / match.group('src_name'),
                     crypto_mode=match.group('crypto'),

@@ -133,8 +133,8 @@ class LowLevelRemoteZip:
 
                 entry = CDEntry.from_buffer(header_data)
 
-                data_after = await io.read_exactly(entry.filename_len + entry.extra_len)
-
+                data_after = await io.read_exactly(entry.filename_len + entry.extra_len + entry.comment_len)
+                assert len(data_after) == entry.extra_len + entry.comment_len + entry.filename_len
                 entry.fix_missing(data_after, 0)
 
                 if fix_zip64:
