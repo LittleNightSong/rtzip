@@ -360,7 +360,7 @@ class CDEntry:
 
         if buf.nbytes < filename_len + extra_len + comment_len:
             from .errors import NotEnoughDataError
-            raise NotEnoughDataError(filename_len + extra_len + comment_len, len(buf) - offset)
+            raise NotEnoughDataError(filename_len + extra_len + comment_len, buf.nbytes - offset)
 
         pos = offset
         self.filename = bytes(buf[pos:pos + filename_len])
@@ -460,7 +460,7 @@ class LocalFileHeader:
         values = cls.__STRUCT__.unpack_from(buffer, offset)
         self = cls(*values, filename=b'', raw_extra_fields=b'')  # 先置 filename 等变长字段为空，再在后期填充
 
-        if len(buf) - offset >= self.total_size:
+        if buf.nbytes - offset >= self.total_size:
             self.fix_missing(buffer, offset + 26)
 
         return self
@@ -476,9 +476,9 @@ class LocalFileHeader:
         buf = memoryview(data_after)
         pos = offset
 
-        if len(buf) - offset < self.filename_len:
+        if buf.nbytes - offset < self.filename_len:
             from rtzip import NotEnoughDataError
-            raise NotEnoughDataError(self.filename_len, len(buf) - offset)
+            raise NotEnoughDataError(self.filename_len, buf.nbytes - offset)
 
         _ = self.filename_len
         self.filename = bytes(buf[pos:pos + _])
