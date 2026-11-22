@@ -133,7 +133,8 @@ async def ppmd_wrapper(gen, entry, header, ctx):
     w = int.from_bytes(ppmd_header, 'little')
 
     mmo = (w & 0x0F) + 1
-    sas = ((w >> 4) & 0xFF) + 1
+    sas_mib = ((w >> 4) & 0xFF) + 1
+    sas = sas_mib << 20
     wrm = ((w >> 12) & 0x0F)
 
     dec = pyppmd.PpmdDecompressor(mmo, sas, restore_method=wrm)

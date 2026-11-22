@@ -59,8 +59,8 @@ def sevenzip_new(
     subprocess.run(args, check=True)
 
 
-def generate_all_combinations():
-    algorithms = ['Deflate', 'Store', 'BZip2', 'LZMA']
+def generate_common_zips():
+    algorithms = ['Store', 'Deflate', 'BZip2', 'LZMA', 'PPmd']
     sources = ['random.bin', 'zero.bin', 'plain.txt']
 
     for source in sources:
@@ -87,7 +87,7 @@ def generate_all_combinations():
             )
 
 
-def generate():
+def generate_zip64():
     # print("创建 zip64 文件：数量超出范围（Zip64 EOCD）......")
     # generate_zip64_too_many_files()
     print("创建 zip64 文件：单文件大小超出范围（Zip64 EOCD）......")
@@ -97,5 +97,19 @@ def generate():
 
 
 if __name__ == '__main__':
-    generate()
-    generate_all_combinations()
+    import os
+    if target := os.getenv('GEN_TARGET', None):
+        match target:
+            case 'zip64':
+                generate_zip64()
+            case 'zip64:big':
+                generate_zip64_one_big_file()
+            case 'zip64:offset':
+                generate_zip64_offset_overflow()
+            case 'zips':
+                generate_common_zips()
+
+        exit(0)
+
+    generate_zip64()
+    generate_common_zips()

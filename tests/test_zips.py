@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import pyppmd # type:ignore  # 提前导入以启用 rtzip 的 ppmd 支持
+
 from rtzip import RemoteZip, Context
 from rtzip.builtin_sources import LocalFileSourceSync
 from rtzip.wzaes_backends import tgcrypto_c_lectr_impl
