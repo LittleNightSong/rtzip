@@ -154,7 +154,6 @@ async def main():
     # print(rz.info(file)._entry.last_modified_time)
     # print(rz.info(file)._entry.last_modified_date)
 
-    # TODO: Find why data error
 
 
 if __name__ == '__main__':
